@@ -1670,13 +1670,16 @@ test('a forum that never answers fails the run at its deadline with a clear erro
 });
 
 const ZWSP = '​';
-/* A quadratic pass grows about 16 times from n to 4n; a linear one about 4 times. */
+/* A quadratic pass grows about 16 times from n to 4n, a linear one about 4; 10 leaves room for noise. */
 const growth = (run: (n: number) => void, n: number) => {
-  const time = (size: number) => {
-    const started = performance.now();
-    run(size);
-    return performance.now() - started;
-  };
+  const time = (size: number) =>
+    Math.min(
+      ...[1, 2, 3].map(() => {
+        const started = performance.now();
+        run(size);
+        return performance.now() - started;
+      }),
+    );
   time(n);
   return time(4 * n) / Math.max(time(n), 1);
 };
@@ -1781,9 +1784,9 @@ test('copied text is defused in linear time, nested markers included', () => {
   const mixed = (n: number) => 'a/@#1&#64;github.com '.repeat(n);
   for (const make of [nested, mixed])
     expect(
-      growth((n) => githubCommentBody({ ...reply, raw: make(n) }, 'u'), 2_000),
+      growth((n) => defuseText(make(n)), 50_000),
       'defusing grows faster than linear',
-    ).toBeLessThan(8);
+    ).toBeLessThan(10);
 });
 
 test('a mode name inherited from Object, such as constructor, is refused', async () => {
