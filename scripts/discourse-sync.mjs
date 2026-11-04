@@ -389,7 +389,13 @@ export const request = async (url, init, scopeHint) => {
       new Error(
         `${method} ${current} answered ${response.status}.${hint} ${text.slice(0, ERROR_BODY_CHARS)}`,
       ),
-      { status: response.status, url: current },
+      {
+        status: response.status,
+        url: current,
+        rateLimited:
+          response.headers.get('x-ratelimit-remaining') === '0' ||
+          response.headers.has('retry-after'),
+      },
     );
   }
 };
@@ -525,11 +531,12 @@ const topicPosts = async (get, topicId) => {
   return { topic, posts };
 };
 
-/* Past the deadline, or GitHub rate-limits (403 or 429): every later topic would fail too. A forum error skips one topic. */
+/* Past the deadline, or GitHub rate-limits (429, or 403 with no requests left or a Retry-After): every later topic would fail too. */
 const stopsTheRun = (error, githubApi) =>
   error.deadline === true ||
-  ([HTTP_FORBIDDEN, HTTP_TOO_MANY].includes(error.status) &&
-    error.url?.startsWith(`${githubApi}/repos/`));
+  (error.url?.startsWith(`${githubApi}/repos/`) &&
+    (error.status === HTTP_TOO_MANY ||
+      (error.status === HTTP_FORBIDDEN && error.rateLimited)));
 
 const toGithub = async () => {
   const categoryId = parseCategoryId(required('DISCOURSE_CATEGORY_ID'));
