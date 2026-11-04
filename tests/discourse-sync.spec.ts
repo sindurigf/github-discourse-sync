@@ -1670,18 +1670,23 @@ test('a forum that never answers fails the run at its deadline with a clear erro
 });
 
 const ZWSP = '​';
-/* A quadratic pass grows about 16 times from n to 4n, a linear one about 4; 10 leaves room for noise. */
-const growth = (run: (n: number) => void, n: number) => {
-  const time = (size: number) =>
+/* Defusing time over one simple pass on the same text: about 10 to 30 when linear, over 20,000 for the old repeated strip. */
+const costOverOnePass = (text: string) => {
+  const best = (run: () => void) =>
     Math.min(
       ...[1, 2, 3].map(() => {
         const started = performance.now();
-        run(size);
+        run();
         return performance.now() - started;
       }),
     );
-  time(n);
-  return time(4 * n) / Math.max(time(n), 1);
+  return (
+    best(() => defuseText(text)) /
+    Math.max(
+      best(() => text.replace(/x/g, 'y').toUpperCase()),
+      0.01,
+    )
+  );
 };
 
 for (const [name, input, expected] of [
@@ -1784,9 +1789,9 @@ test('copied text is defused in linear time, nested markers included', () => {
   const mixed = (n: number) => 'a/@#1&#64;github.com '.repeat(n);
   for (const make of [nested, mixed])
     expect(
-      growth((n) => defuseText(make(n)), 50_000),
-      'defusing grows faster than linear',
-    ).toBeLessThan(10);
+      costOverOnePass(make(20_000)),
+      'defusing is not linear',
+    ).toBeLessThan(300);
 });
 
 test('a mode name inherited from Object, such as constructor, is refused', async () => {
