@@ -14,6 +14,8 @@ import {
   GITHUB_TRUNCATED_NOTE,
   LINK_COMMENT_PREFIX,
   PR_LINK_COMMENT_PREFIX,
+  RUN_DEADLINE_MS,
+  SETUP_MARGIN_MS,
   STATUS_SCOPE,
   TRUNCATED_NOTE,
   acceptDecision,
@@ -1108,6 +1110,38 @@ test('a forum reply longer than a GitHub comment is shortened, keeping its link 
   }
 });
 
+test('a GET retries a 5xx answer and a dropped connection, a POST does not', async () => {
+  let calls = 0;
+  const fake = await fakeApi((method, url) => {
+    calls += 1;
+    if (url === '/flaky' && calls === 1)
+      return { status: 503, headers: { 'retry-after': '1' } };
+    if (url === '/dropped' && calls === 3) return 'drop';
+    if (url === '/post') return { status: 502 };
+    return { status: 200, body: { ok: true } };
+  });
+  try {
+    expect(await (await request(`${fake.origin}/flaky`, {})).json()).toEqual({
+      ok: true,
+    });
+    expect(await (await request(`${fake.origin}/dropped`, {})).json()).toEqual({
+      ok: true,
+    });
+    await expect(
+      request(`${fake.origin}/post`, { method: 'POST', body: '{}' }),
+    ).rejects.toThrow(/answered 502/);
+    expect(fake.hits.map(({ url }) => url)).toEqual([
+      '/flaky',
+      '/flaky',
+      '/dropped',
+      '/dropped',
+      '/post',
+    ]);
+  } finally {
+    fake.server.close();
+  }
+});
+
 test('ordinary text that starts like a mirror header is still copied both ways', () => {
   expect(
     shouldMirrorComment({ ...human, body: 'I wrote on the forum: see logs' }),
@@ -1138,6 +1172,74 @@ const openedIssue = {
     user: { login: 'robin', type: 'User' },
   },
 };
+
+test('a request GitHub or Discourse never received, such as a bad header, is not retried', async () => {
+  const started = performance.now();
+  await expect(
+    request('http://127.0.0.1:9/t/1.json', {
+      headers: { 'Api-Key': 'bad\nkey' },
+    }),
+  ).rejects.toThrow(/header/i);
+  /* The first retry waits BACKOFF_BASE_MS, 2 s. */
+  expect(performance.now() - started, 'a bad header was retried').toBeLessThan(
+    2_000,
+  );
+});
+
+test('each mode stops at its run deadline, before its job times out', () => {
+  const modes = new Set<string>();
+  for (const { name, workflow } of workflows()) {
+    for (const job of Object.values(workflow.jobs ?? {}) as {
+      'timeout-minutes'?: number;
+      steps?: Step[];
+    }[]) {
+      const mode = (job.steps ?? [])
+        .map(
+          (step) =>
+            /node scripts\/discourse-sync\.mjs (\S+)/.exec(step.run ?? '')?.[1],
+        )
+        .find(Boolean);
+      if (!mode) continue;
+      modes.add(mode);
+      const deadline = (RUN_DEADLINE_MS as Record<string, number>)[mode];
+      expect(
+        deadline,
+        `${name} runs ${mode}, which has no deadline`,
+      ).toBeGreaterThan(0);
+      expect(
+        deadline + SETUP_MARGIN_MS,
+        `${name} can time out before ${mode} reaches its deadline`,
+      ).toBeLessThanOrEqual((job['timeout-minutes'] ?? 0) * 60_000);
+    }
+  }
+  expect([...modes].sort()).toEqual([
+    'open-topic',
+    'state',
+    'to-forum',
+    'to-github',
+  ]);
+});
+
+test('a forum that never answers fails the run at its deadline with a clear error', async () => {
+  const server = createServer(() => {});
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  try {
+    const started = performance.now();
+    const run = await runMode(
+      'to-forum',
+      origin,
+      { comment: human, issue: { number: 3 } },
+      { SYNC_DEADLINE_MS: '1500' },
+    );
+    expect(run.code).not.toBe(0);
+    expect(run.stderr).toMatch(/passed its 1\.5 s run deadline/);
+    expect(performance.now() - started).toBeLessThan(10_000);
+  } finally {
+    server.closeAllConnections();
+    server.close();
+  }
+});
 
 const ZWSP = '​';
 /* A quadratic pass grows about 16 times from n to 4n; a linear one about 4 times. */
@@ -1254,6 +1356,12 @@ test('copied text is defused in linear time, nested markers included', () => {
       growth((n) => githubCommentBody({ ...reply, raw: make(n) }, 'u'), 2_000),
       'defusing grows faster than linear',
     ).toBeLessThan(8);
+});
+
+test('a mode name inherited from Object, such as constructor, is refused', async () => {
+  const run = await runMode('constructor', 'http://127.0.0.1:9');
+  expect(run.code).not.toBe(0);
+  expect(run.stderr).toContain('Usage: discourse-sync.mjs');
 });
 
 test('the link comment text in issue-to-discourse.yml matches the script', () => {
