@@ -28,7 +28,7 @@ const MS_PER_HOUR = 3_600_000;
 const POSTS_PER_REQUEST = 100;
 const GITHUB_PAGE_SIZE = 100;
 const MAX_ATTEMPTS = 5;
-/* 5 attempts and 3 redirects of 20 s, plus 4 waits of up to 20 s: 4 minutes, inside the 5-minute jobs. */
+/* Per request: 5 attempts and 3 redirects of 20 s, plus 4 waits of up to 20 s, is 4 minutes at most. */
 const MAX_RETRY_AFTER_S = 20;
 const BACKOFF_BASE_MS = 2_000;
 const MS_PER_S = 1_000;
@@ -281,6 +281,10 @@ export const parseCategoryId = (value) => {
     );
   return Number(value);
 };
+
+/** The message and, for a network error, its cause. */
+const describe = (error) =>
+  `${error.message}${error.cause ? ` (${error.cause.message ?? error.cause})` : ''}`;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -537,16 +541,25 @@ const toGithub = async () => {
   };
   let copied = 0;
   let failed = 0;
-  for (const listed of await recentTopics(get, categoryId, cutoff)) {
-    const target = topicTarget(listed.title);
-    if (!target || listed.category_id !== categoryId) continue;
+  const listed = await recentTopics(get, categoryId, cutoff);
+  for (const [index, topic] of listed.entries()) {
+    const target = topicTarget(topic.title);
+    if (!target || topic.category_id !== categoryId) continue;
     try {
-      copied += await syncTopic(listed, target);
+      copied += await syncTopic(topic, target);
     } catch (error) {
       failed += 1;
       console.error(
-        `::error::Could not sync topic ${listed.id}: ${error.message}`,
+        `::error::Could not sync topic ${topic.id}: ${describe(error)}`,
       );
+      /* A 5xx or network error that outlasted the retries would cost every later topic the same wait. */
+      if (error.status === undefined || error.status >= HTTP_SERVER_ERROR) {
+        const left = listed.length - index - 1;
+        console.error(
+          `::error::Stopped before ${left} more ${left === 1 ? 'topic' : 'topics'}; the next run tries again.`,
+        );
+        break;
+      }
     }
   }
   console.log(
@@ -713,8 +726,7 @@ const main = async () => {
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   main().catch((error) => {
-    const cause = error.cause ? ` (${error.cause.message ?? error.cause})` : '';
-    console.error(`::error::${error.message}${cause}`);
+    console.error(`::error::${describe(error)}`);
     process.exit(1);
   });
 }

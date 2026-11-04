@@ -1526,3 +1526,64 @@ test('a person quoting the comment link in the topic does not stop the comment',
     fake.server.close();
   }
 });
+
+test('a forum that keeps failing stops the to-github run instead of retrying every topic', async () => {
+  const fake = await fakeApi((method, url) => {
+    if (url.startsWith('/c/5/l/latest.json'))
+      return {
+        status: 200,
+        body: {
+          topic_list: { topics: [recentTopic(90, 4), recentTopic(91, 3)] },
+        },
+      };
+    if (url === '/t/90.json')
+      return { status: 503, headers: { 'retry-after': '1' } };
+    return { status: 500, body: { unexpected: `${method} ${url}` } };
+  });
+  try {
+    const run = await runMode('to-github', fake.origin);
+    expect(run.code).not.toBe(0);
+    expect(run.stderr).toContain('Could not sync topic 90');
+    expect(run.stderr).toMatch(/Stopped before 1 more topic/);
+    expect(fake.hits.some(({ url }) => url.startsWith('/t/91'))).toBe(false);
+  } finally {
+    fake.server.close();
+  }
+});
+
+test('a failing topic reports the cause of a network error', async () => {
+  const fake = await fakeApi((method, url) => {
+    if (url.startsWith('/c/5/l/latest.json'))
+      return {
+        status: 200,
+        body: { topic_list: { topics: [recentTopic(91, 3)] } },
+      };
+    if (url === '/t/91.json')
+      return {
+        status: 200,
+        body: { id: 91, slug: 'crash', post_stream: { stream: [1, 501] } },
+      };
+    if (url.startsWith('/t/91/posts.json'))
+      return {
+        status: 200,
+        body: { post_stream: { posts: [firstPost, reply] } },
+      };
+    if (url === '/repos/o/r/issues/3')
+      return {
+        status: 200,
+        body: { number: 3, repository_url: `${fake.origin}/repos/o/r` },
+      };
+    if (url.startsWith('/repos/o/r/issues/3/comments'))
+      return method === 'POST'
+        ? 'drop'
+        : { status: 200, body: [topicLink(91)] };
+    return { status: 500, body: { unexpected: `${method} ${url}` } };
+  });
+  try {
+    const run = await runMode('to-github', fake.origin);
+    expect(run.code).not.toBe(0);
+    expect(run.stderr).toMatch(/Could not sync topic 91: fetch failed \(.+\)/);
+  } finally {
+    fake.server.close();
+  }
+});
