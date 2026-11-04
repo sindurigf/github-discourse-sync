@@ -1163,6 +1163,47 @@ test('ordinary text that starts like a mirror header is still copied both ways',
   ).toBe(false);
 });
 
+test('a re-run of a comment already on the forum posts nothing', async () => {
+  const fake = await fakeApi((method, url) => {
+    if (url.startsWith('/repos/o/r/issues/3/comments'))
+      return { status: 200, body: [topicLink(42)] };
+    if (url === '/t/42.json')
+      return {
+        status: 200,
+        body: { id: 42, slug: 'crash', post_stream: { stream: [1, 7] } },
+      };
+    if (url.startsWith('/t/42/posts.json'))
+      return {
+        status: 200,
+        body: {
+          post_stream: {
+            posts: [
+              firstPost,
+              {
+                id: 7,
+                post_number: 2,
+                post_type: 1,
+                username: API_USER,
+                raw: forumReplyBody(human),
+              },
+            ],
+          },
+        },
+      };
+    return { status: 500, body: { unexpected: `${method} ${url}` } };
+  });
+  try {
+    const run = await runMode('to-forum', fake.origin, {
+      comment: human,
+      issue: { number: 3 },
+    });
+    expect(run.code).toBe(0);
+    expect(fake.hits.filter(({ method }) => method === 'POST')).toEqual([]);
+  } finally {
+    fake.server.close();
+  }
+});
+
 const openedIssue = {
   issue: {
     number: 3,
@@ -1172,6 +1213,49 @@ const openedIssue = {
     user: { login: 'robin', type: 'User' },
   },
 };
+
+test('a person quoting the comment link in the topic does not stop the comment', async () => {
+  const fake = await fakeApi((method, url) => {
+    if (url.startsWith('/repos/o/r/issues/3/comments'))
+      return { status: 200, body: [topicLink(42)] };
+    if (url === '/t/42.json')
+      return {
+        status: 200,
+        body: { id: 42, slug: 'crash', post_stream: { stream: [1, 7] } },
+      };
+    if (url.startsWith('/t/42/posts.json'))
+      return {
+        status: 200,
+        body: {
+          post_stream: {
+            posts: [
+              firstPost,
+              {
+                id: 7,
+                post_number: 2,
+                post_type: 1,
+                username: 'nami',
+                raw: `See\n\n${human.html_url}`,
+              },
+            ],
+          },
+        },
+      };
+    if (url === '/posts.json' && method === 'POST')
+      return { status: 200, body: { id: 8 } };
+    return { status: 500, body: { unexpected: `${method} ${url}` } };
+  });
+  try {
+    const run = await runMode('to-forum', fake.origin, {
+      comment: human,
+      issue: { number: 3 },
+    });
+    expect(run.code, run.stderr).toBe(0);
+    expect(fake.hits.filter(({ method }) => method === 'POST')).toHaveLength(1);
+  } finally {
+    fake.server.close();
+  }
+});
 
 test('a request GitHub or Discourse never received, such as a bad header, is not retried', async () => {
   const started = performance.now();
@@ -1362,6 +1446,49 @@ test('a mode name inherited from Object, such as constructor, is refused', async
   const run = await runMode('constructor', 'http://127.0.0.1:9');
   expect(run.code).not.toBe(0);
   expect(run.stderr).toContain('Usage: discourse-sync.mjs');
+});
+
+test('a mirror-shaped post from someone other than the API user does not stop the comment', async () => {
+  const fake = await fakeApi((method, url) => {
+    if (url.startsWith('/repos/o/r/issues/3/comments'))
+      return { status: 200, body: [topicLink(42)] };
+    if (url === '/t/42.json')
+      return {
+        status: 200,
+        body: { id: 42, slug: 'crash', post_stream: { stream: [1, 7] } },
+      };
+    if (url.startsWith('/t/42/posts.json'))
+      return {
+        status: 200,
+        body: {
+          post_stream: {
+            posts: [
+              firstPost,
+              {
+                id: 7,
+                post_number: 2,
+                post_type: 1,
+                username: 'mallory',
+                raw: forumReplyBody(human),
+              },
+            ],
+          },
+        },
+      };
+    if (url === '/posts.json' && method === 'POST')
+      return { status: 200, body: { id: 8 } };
+    return { status: 500, body: { unexpected: `${method} ${url}` } };
+  });
+  try {
+    const run = await runMode('to-forum', fake.origin, {
+      comment: human,
+      issue: { number: 3 },
+    });
+    expect(run.code, run.stderr).toBe(0);
+    expect(fake.hits.filter(({ method }) => method === 'POST')).toHaveLength(1);
+  } finally {
+    fake.server.close();
+  }
 });
 
 test('the link comment text in issue-to-discourse.yml matches the script', () => {

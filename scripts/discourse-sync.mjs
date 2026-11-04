@@ -466,7 +466,16 @@ const toForum = async () => {
   const topicId = topicIdFromComments(await github().comments(issue.number));
   if (!topicId)
     return console.log(`#${issue.number} has no forum topic; skipped.`);
-  const { post } = forum();
+  const { get, post } = forum();
+  const { posts } = await topicPosts(get, topicId);
+  const apiUsername = required('DISCOURSE_API_USERNAME').toLowerCase();
+  const footer = `\n\n${comment.html_url}`;
+  const copied = ({ username, raw }) =>
+    username?.toLowerCase() === apiUsername &&
+    isGithubMirror(raw) &&
+    (raw ?? '').trimEnd().endsWith(footer);
+  if (posts.some(copied))
+    return console.log(`Comment ${comment.id} is already in topic ${topicId}.`);
   const created = await post(
     '/posts.json',
     { topic_id: topicId, raw: forumReplyBody(comment) },
