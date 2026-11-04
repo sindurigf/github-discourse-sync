@@ -1720,7 +1720,7 @@ for (const [name, input, expected] of [
   [
     'a GitHub link after a link',
     '[t](https://forum.example.com)https://github.com/octocat/Hello-World/issues/1',
-    '[t](https://forum.example.com)https://redirect.github.com/octocat/Hello-World/issues/1',
+    `[t](https://forum.example.com)https://redirect.github.com/octocat/Hello-World/issues/${ZWSP}1`,
   ],
   [
     'a link fragment',
@@ -1743,6 +1743,31 @@ for (const [name, input, expected] of [
     'https://redirect.github.com/a',
   ],
   ['a marker', '<!-- discourse-post:5 -->', `<!-- discourse-post${ZWSP}:5 -->`],
+  [
+    'a GH- reference',
+    'GH-1 gh-0001 (Gh-2)',
+    `GH-${ZWSP}1 gh-${ZWSP}0001 (Gh-${ZWSP}2)`,
+  ],
+  [
+    'an issue path',
+    'actions/checkout/issues/1 and /pull/2',
+    `actions/checkout/issues/${ZWSP}1 and /pull/${ZWSP}2`,
+  ],
+  [
+    'a relative issue path',
+    '/issues/3 ../issues/1 pulls/4 discussions/5',
+    `/issues/${ZWSP}3 ../issues/${ZWSP}1 pulls/${ZWSP}4 discussions/${ZWSP}5`,
+  ],
+  [
+    'a scheme-less GitHub link',
+    'github.com/o/r/issues/1',
+    `redirect.github.com/o/r/issues/${ZWSP}1`,
+  ],
+  [
+    'a Discourse quote',
+    '[quote="octocat, post:1, topic:2"] [QUOTE=x]',
+    `[quote${ZWSP}="octocat, post:1, topic:2"] [QUOTE${ZWSP}=x]`,
+  ],
 ] as const)
   test(`copied text defuses ${name}`, () => {
     expect(defuseText(input)).toBe(expected);
@@ -1764,6 +1789,15 @@ test('no adversarial input keeps a mention, reference, entity, GitHub link or ma
     'o/r&num;1',
     '#1',
     'GH-1 #1',
+    'gh-0001',
+    '(GH-1)',
+    'actions/checkout/issues/1',
+    'o/r/pull/2',
+    '/issues/3',
+    '../issues/1',
+    'pulls/4',
+    'discussions/5',
+    '[quote="octocat, post:1, topic:2"]',
     'https://github.com/o/r/issues/1',
     'HTTPS://GITHUB.COM/o/r/pull/2',
     'www.github.com/o/r/issues/3',
@@ -1777,6 +1811,9 @@ test('no adversarial input keeps a mention, reference, entity, GitHub link or ma
     const out = defuseText(input);
     expect(out, input).not.toMatch(/@(?!​)/);
     expect(out, input).not.toMatch(/#\d/);
+    expect(out, input).not.toMatch(/\bgh-\d/i);
+    expect(out, input).not.toMatch(/\b(?:issues|pulls?|discussions)\/\d/);
+    expect(out, input).not.toMatch(/\[quote(?!\u200b)/i);
     expect(out, input).not.toMatch(/&#|&(?!amp;)[A-Za-z]+;/);
     expect(out, input).not.toMatch(/(?<!redirect\.)github\.com/i);
     expect(out, input).not.toMatch(/discourse-post:/);
@@ -1860,4 +1897,12 @@ test('an issue opened by a bot opens no topic', async () => {
   } finally {
     fake.server.close();
   }
+});
+
+test('a forum username that reads as a reference is defused in the GitHub comment header', () => {
+  const body = githubCommentBody(
+    { ...reply, username: 'gh-12' },
+    'https://forum.example.com/t/x/42/2',
+  );
+  expect(body.startsWith(`gh-${ZWSP}12 wrote on the forum:`)).toBe(true);
 });

@@ -62,9 +62,9 @@ const HTTP_TOO_MANY = 429;
 export const markerOf = (postId) => `<!-- discourse-post:${postId} -->`;
 
 /**
- * Copied text, in either direction, without context parsing: every marker keyword, @ and #digit
- * gets a zero-width space, entities that could decode to them are escaped, and github.com becomes
- * redirect.github.com. So no copy notifies anyone, links an issue or claims a post (README.md#limits-and-privacy).
+ * Copied text, in either direction, without context parsing: a zero-width space after every @, #digit,
+ * GH-digit, issues/ pull/ pulls/ discussions/ before a digit, [quote and marker keyword; entities that
+ * could decode to them are escaped and github.com becomes redirect.github.com (README.md#limits-and-privacy).
  */
 export const defuseText = (text) =>
   text
@@ -72,7 +72,10 @@ export const defuseText = (text) =>
     .replace(/&(?=#|[A-Za-z]+;)/g, '&amp;')
     .replaceAll('@', '@\u200b')
     .replace(/#(?=\d)/g, '#\u200b')
-    .replace(/(?<!redirect\.)github\.com/gi, 'redirect.github.com');
+    .replace(/(?<!redirect\.)github\.com/gi, 'redirect.github.com')
+    .replace(/(?<=\bgh)-(?=\d)/gi, '-\u200b')
+    .replace(/(?<=\b(?:issues|pulls?|discussions)\/)(?=\d)/g, '\u200b')
+    .replace(/\[quote/gi, '$&\u200b');
 
 /** Forum post ids already mirrored, read from the bot's comments only. */
 export const mirroredPostIds = (comments) =>
@@ -251,7 +254,7 @@ export const forumReplyBody = (comment) => {
 };
 
 export const githubCommentBody = (post, postUrl) => {
-  const header = `${post.username} wrote on the forum:\n\n`;
+  const header = `${defuseText(post.username ?? '')} wrote on the forum:\n\n`;
   const footer = `\n\n${postUrl}\n${markerOf(post.id)}`;
   const text = defuseText(post.raw ?? '');
   const room = GITHUB_MAX_COMMENT_CHARS - Array.from(header + footer).length;
