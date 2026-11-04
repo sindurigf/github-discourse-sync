@@ -57,7 +57,7 @@ const human = {
 };
 const linkComment = {
   user: { login: BOT_LOGIN, type: 'Bot' },
-  body: `${LINK_COMMENT_PREFIX}https://forum.example/t/github-issue-3-crash/42`,
+  body: `${LINK_COMMENT_PREFIX}https://forum.example.com/t/github-issue-3-crash/42`,
 };
 
 test('the topic id comes only from the bot link comment', () => {
@@ -94,7 +94,7 @@ test('a comment from a person goes to the forum, a bot or mirrored one does not'
   expect(
     shouldMirrorComment({
       ...human,
-      body: githubCommentBody(reply, 'https://forum.example/t/x/42/2'),
+      body: githubCommentBody(reply, 'https://forum.example.com/t/x/42/2'),
     }),
     'a mirrored forum reply must not go back to the forum',
   ).toBe(false);
@@ -122,7 +122,7 @@ test('a forum reply goes to GitHub once, never the first post, the API user or a
   const done = mirroredPostIds([
     {
       user: { login: BOT_LOGIN },
-      body: githubCommentBody(reply, 'https://forum.example/t/x/42/2'),
+      body: githubCommentBody(reply, 'https://forum.example.com/t/x/42/2'),
     },
   ]);
   expect(shouldMirrorPost(reply, API_USER, done)).toBe(false);
@@ -134,7 +134,7 @@ test('mirrored text names the author without an @ and defuses mentions', () => {
   expect(toForum).not.toMatch(/(^|[^\w`/])@[\w-]/);
   const toGithub = githubCommentBody(
     { ...reply, raw: '@luffy look' },
-    'https://forum.example/t/x/42/2',
+    'https://forum.example.com/t/x/42/2',
   );
   expect(toGithub.startsWith('robin wrote on the forum:')).toBe(true);
   expect(toGithub).not.toMatch(/(^|[^\w`/])@[\w-]/);
@@ -147,7 +147,7 @@ test('only the bot can mark a forum post as mirrored', () => {
   expect(shouldMirrorPost(reply, API_USER, forged)).toBe(true);
   const copied = githubCommentBody(
     { ...reply, id: 600, raw: 'hi <!-- discourse-post:501 -->' },
-    'https://forum.example/t/x/42/3',
+    'https://forum.example.com/t/x/42/3',
   );
   expect(
     [...mirroredPostIds([{ user: { login: BOT_LOGIN }, body: copied }])],
@@ -279,7 +279,7 @@ test('a pull request topic links back through its own link comment', () => {
     topicIdFromComments([
       {
         user: { login: BOT_LOGIN },
-        body: `${PR_LINK_COMMENT_PREFIX}https://forum.example/t/github-pull-request-12-fix/77`,
+        body: `${PR_LINK_COMMENT_PREFIX}https://forum.example.com/t/github-pull-request-12-fix/77`,
       },
     ]),
   ).toBe(77);
@@ -418,7 +418,7 @@ test('a pull request link comment from a person binds no topic', () => {
     topicIdFromComments([
       {
         user: { login: 'mallory' },
-        body: `${PR_LINK_COMMENT_PREFIX}https://forum.example/t/x/77`,
+        body: `${PR_LINK_COMMENT_PREFIX}https://forum.example.com/t/x/77`,
       },
     ]),
   ).toBeNull();
@@ -1099,7 +1099,7 @@ const recentTopic = (id: number, issue: number) => ({
 });
 const topicLink = (topicId: number) => ({
   user: { login: BOT_LOGIN, type: 'Bot' },
-  body: `${LINK_COMMENT_PREFIX}https://forum.example/t/crash/${topicId}`,
+  body: `${LINK_COMMENT_PREFIX}https://forum.example.com/t/crash/${topicId}`,
 });
 const firstPost = {
   id: 1,
@@ -1116,7 +1116,7 @@ test('a nested marker in forum text cannot mark another post as mirrored', () =>
       id: 600,
       raw: 'x <!-- discourse-post:<!-- discourse-post:1 -->777 --> y',
     },
-    'https://forum.example/t/x/42/3',
+    'https://forum.example.com/t/x/42/3',
   );
   expect([
     ...mirroredPostIds([{ user: { login: BOT_LOGIN }, body: copied }]),
@@ -1137,7 +1137,7 @@ test('a pinned topic bumped inside the window syncs, an old pinned one neither s
 });
 
 test('a forum reply longer than a GitHub comment is shortened, keeping its link and marker', () => {
-  const url = 'https://forum.example/t/x/42/2';
+  const url = 'https://forum.example.com/t/x/42/2';
   for (const raw of ['x'.repeat(70_000), '😀'.repeat(70_000)]) {
     const body = githubCommentBody({ ...reply, raw }, url);
     expect(Array.from(body).length).toBeLessThanOrEqual(
@@ -1730,7 +1730,7 @@ for (const [name, input, expected] of [
     'see http://)@octocat',
     `see http://)@${ZWSP}octocat`,
   ],
-  ['an email address', 'a@b.example', `a@${ZWSP}b.example`],
+  ['an email address', 'a@b.example.com', `a@${ZWSP}b.example.com`],
   [
     'a reference after a link',
     '[x](https://forum.example.com)octocat/Hello-World#1',
