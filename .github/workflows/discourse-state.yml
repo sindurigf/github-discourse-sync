@@ -1,0 +1,49 @@
+name: Close and reopen Discourse topics
+
+# Mirrors a close, merge or reopen on GitHub to the forum topic. pull_request_target
+# runs the default branch's files and never checks out the pull request's code
+# (README.md#setup).
+on:
+  issues:
+    types: [closed, reopened]
+  pull_request_target:
+    types: [closed, reopened]
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+
+concurrency:
+  # One FIFO queue per issue or pull request across the forum workflows: the
+  # topic exists before a comment, close or reopen for it runs. queue: max keeps
+  # every pending run; the default cancels all but the newest.
+  group: discourse-${{ github.event.issue.number || github.event.pull_request.number }}
+  queue: max
+
+jobs:
+  state:
+    name: Update the Discourse topic
+    if: vars.DISCOURSE_URL != '' && vars.DISCOURSE_CATEGORY_ID != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    steps:
+      - name: Check out the default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: '.nvmrc'
+
+      - name: Reply, mark the solution and close or reopen the topic
+        env:
+          DISCOURSE_URL: ${{ vars.DISCOURSE_URL }}
+          DISCOURSE_API_KEY: ${{ secrets.DISCOURSE_API_KEY }}
+          DISCOURSE_API_USERNAME: ${{ secrets.DISCOURSE_API_USERNAME }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/discourse-sync.mjs state

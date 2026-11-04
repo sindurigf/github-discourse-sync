@@ -1,0 +1,44 @@
+name: Mirror Discourse replies to issues and pull requests
+
+# Polls, since Discourse cannot call GitHub. GitHub turns a schedule off after
+# 60 days without repository activity; re-enable it in the Actions tab.
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  to-github:
+    name: Mirror forum replies to GitHub
+    if: vars.DISCOURSE_URL != '' && vars.DISCOURSE_CATEGORY_ID != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: '.nvmrc'
+
+      - name: Copy new forum replies to their issues and pull requests
+        env:
+          DISCOURSE_URL: ${{ vars.DISCOURSE_URL }}
+          DISCOURSE_CATEGORY_ID: ${{ vars.DISCOURSE_CATEGORY_ID }}
+          DISCOURSE_API_KEY: ${{ secrets.DISCOURSE_API_KEY }}
+          DISCOURSE_API_USERNAME: ${{ secrets.DISCOURSE_API_USERNAME }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/discourse-sync.mjs to-github

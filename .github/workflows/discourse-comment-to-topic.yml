@@ -1,0 +1,46 @@
+name: Mirror issue and pull request comments to Discourse
+
+# Opt-in like issue-to-discourse.yml. Runs the default branch's script on the
+# event file, so a comment's text never reaches a shell
+# (README.md#limits-and-privacy).
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+
+concurrency:
+  # One FIFO queue per issue or pull request across the forum workflows: the
+  # topic exists before a comment, close or reopen for it runs. queue: max keeps
+  # every pending run; the default cancels all but the newest.
+  group: discourse-${{ github.event.issue.number || github.event.pull_request.number }}
+  queue: max
+
+jobs:
+  to-forum:
+    name: Mirror the comment to Discourse
+    if: vars.DISCOURSE_URL != '' && vars.DISCOURSE_CATEGORY_ID != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: '.nvmrc'
+
+      - name: Post the comment as a forum reply
+        env:
+          DISCOURSE_URL: ${{ vars.DISCOURSE_URL }}
+          DISCOURSE_API_KEY: ${{ secrets.DISCOURSE_API_KEY }}
+          DISCOURSE_API_USERNAME: ${{ secrets.DISCOURSE_API_USERNAME }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/discourse-sync.mjs to-forum

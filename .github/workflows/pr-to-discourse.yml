@@ -1,0 +1,50 @@
+name: Create Discourse topic for pull requests
+
+# pull_request_target, so a fork's pull request can reach the secrets: it runs
+# the default branch's files and never checks out or runs the pull request's code.
+# Drafts wait for ready_for_review (README.md#what-it-syncs).
+on:
+  pull_request_target:
+    types: [opened, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  # One FIFO queue per issue or pull request across the forum workflows: the
+  # topic exists before a comment, close or reopen for it runs. queue: max keeps
+  # every pending run; the default cancels all but the newest.
+  group: discourse-${{ github.event.issue.number || github.event.pull_request.number }}
+  queue: max
+
+jobs:
+  open-topic:
+    name: Create Discourse topic
+    if: >-
+      vars.DISCOURSE_URL != '' && vars.DISCOURSE_CATEGORY_ID != '' &&
+      !github.event.pull_request.draft &&
+      github.event.pull_request.user.type != 'Bot'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    steps:
+      - name: Check out the default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: '.nvmrc'
+
+      - name: Open the topic and link it on the pull request
+        env:
+          DISCOURSE_URL: ${{ vars.DISCOURSE_URL }}
+          DISCOURSE_CATEGORY_ID: ${{ vars.DISCOURSE_CATEGORY_ID }}
+          DISCOURSE_API_KEY: ${{ secrets.DISCOURSE_API_KEY }}
+          DISCOURSE_API_USERNAME: ${{ secrets.DISCOURSE_API_USERNAME }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/discourse-sync.mjs open-topic

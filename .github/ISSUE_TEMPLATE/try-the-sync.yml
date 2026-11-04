@@ -1,0 +1,17 @@
+name: Try the sync
+description: Open an issue to see its forum topic appear.
+title: 'Test: '
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        This issue, its comments and its close are copied to a public forum
+        topic, and forum replies are copied back here. Do not post anything
+        private. Edits and deletions are not copied.
+  - type: textarea
+    id: body
+    attributes:
+      label: Message
+      description: Any text. It becomes the first post of the topic.
+    validations:
+      required: true
