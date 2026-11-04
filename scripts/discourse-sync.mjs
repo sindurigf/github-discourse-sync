@@ -28,11 +28,12 @@ const MS_PER_HOUR = 3_600_000;
 const POSTS_PER_REQUEST = 100;
 const GITHUB_PAGE_SIZE = 100;
 const MAX_ATTEMPTS = 5;
-/* One request with four waits and five 30 s timeouts takes at most 4.5 minutes. */
-const MAX_RETRY_AFTER_S = 30;
+/* 5 attempts and 3 redirects of 20 s, plus 4 waits of up to 20 s: 4 minutes, inside the 5-minute jobs. */
+const MAX_RETRY_AFTER_S = 20;
 const BACKOFF_BASE_MS = 2_000;
 const MS_PER_S = 1_000;
-const REQUEST_TIMEOUT_MS = 30_000;
+const REQUEST_TIMEOUT_MS = 20_000;
+const HTTP_SERVER_ERROR = 500;
 const HTTP_FORBIDDEN = 403;
 const HTTP_NOT_FOUND = 404;
 const HTTP_GONE = 410;
@@ -278,18 +279,36 @@ export const redirectTarget = (from, location, method, origin, hops) => {
 
 export const STATUS_SCOPE = 'topics: status';
 
-/* Retries 429 with Retry-After or exponential backoff; a 403 names the scope it needs, and for status the user rights. */
+const backoffMs = (attempt, retryAfterHeader) => {
+  const retryAfter = Number(retryAfterHeader);
+  return Number.isFinite(retryAfter) && retryAfter > 0
+    ? Math.min(retryAfter, MAX_RETRY_AFTER_S) * MS_PER_S
+    : BACKOFF_BASE_MS * 2 ** (attempt - 1);
+};
+
+/**
+ * Retries 429 for any method, and a 5xx, timeout or dropped connection for a GET only,
+ * since a repeated POST could post twice. A 403 names the scope it needs.
+ */
 export const request = async (url, init, scopeHint) => {
   const method = init?.method ?? 'GET';
   const origin = new URL(url).origin;
   let current = url;
   let hops = 0;
   for (let attempt = 1; ; attempt += 1) {
-    const response = await fetch(current, {
-      ...init,
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-      redirect: 'manual',
-    });
+    const canRetry = attempt < MAX_ATTEMPTS;
+    let response;
+    try {
+      response = await fetch(current, {
+        ...init,
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        redirect: 'manual',
+      });
+    } catch (error) {
+      if (method !== 'GET' || !canRetry) throw error;
+      await sleep(backoffMs(attempt));
+      continue;
+    }
     if (REDIRECT_STATUSES.has(response.status)) {
       current = redirectTarget(
         current,
@@ -302,13 +321,12 @@ export const request = async (url, init, scopeHint) => {
       attempt -= 1;
       continue;
     }
-    if (response.status === HTTP_TOO_MANY && attempt < MAX_ATTEMPTS) {
-      const retryAfter = Number(response.headers.get('retry-after'));
-      await sleep(
-        Number.isFinite(retryAfter) && retryAfter > 0
-          ? Math.min(retryAfter, MAX_RETRY_AFTER_S) * MS_PER_S
-          : BACKOFF_BASE_MS * 2 ** (attempt - 1),
-      );
+    const transient =
+      response.status === HTTP_TOO_MANY ||
+      (method === 'GET' && response.status >= HTTP_SERVER_ERROR);
+    if (transient && canRetry) {
+      await response.body?.cancel();
+      await sleep(backoffMs(attempt, response.headers.get('retry-after')));
       continue;
     }
     if (response.ok) return response;

@@ -1091,6 +1091,43 @@ test('no pull_request_target run step fetches the pull request', () => {
   }
 });
 
+type Route = (
+  method: string,
+  url: string,
+  body: string,
+) =>
+  { status: number; body?: unknown; headers?: Record<string, string> } | 'drop';
+
+const fakeApi = (
+  route: Route,
+): Promise<{ server: Server; origin: string; hits: Hit[] }> =>
+  new Promise((resolve) => {
+    const hits: Hit[] = [];
+    const server = createServer((req, res) => {
+      let body = '';
+      req.on('data', (chunk) => (body += chunk));
+      req.on('end', () => {
+        const method = req.method ?? '';
+        const url = req.url ?? '';
+        hits.push({ method, url, body });
+        const answer = route(method, url, body);
+        if (answer === 'drop') return req.socket.destroy();
+        res.writeHead(answer.status, {
+          'content-type': 'application/json',
+          ...answer.headers,
+        });
+        res.end(JSON.stringify(answer.body ?? {}));
+      });
+    });
+    server.listen(0, '127.0.0.1', () =>
+      resolve({
+        server,
+        origin: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
+        hits,
+      }),
+    );
+  });
+
 test('a nested marker in forum text cannot mark another post as mirrored', () => {
   const copied = githubCommentBody(
     {
@@ -1116,6 +1153,38 @@ test('a pinned topic bumped inside the window syncs, an old pinned one neither s
     recent: [page[0], page[2]],
     older: false,
   });
+});
+
+test('a GET retries a 5xx answer and a dropped connection, a POST does not', async () => {
+  let calls = 0;
+  const fake = await fakeApi((method, url) => {
+    calls += 1;
+    if (url === '/flaky' && calls === 1)
+      return { status: 503, headers: { 'retry-after': '1' } };
+    if (url === '/dropped' && calls === 3) return 'drop';
+    if (url === '/post') return { status: 502 };
+    return { status: 200, body: { ok: true } };
+  });
+  try {
+    expect(await (await request(`${fake.origin}/flaky`, {})).json()).toEqual({
+      ok: true,
+    });
+    expect(await (await request(`${fake.origin}/dropped`, {})).json()).toEqual({
+      ok: true,
+    });
+    await expect(
+      request(`${fake.origin}/post`, { method: 'POST', body: '{}' }),
+    ).rejects.toThrow(/answered 502/);
+    expect(fake.hits.map(({ url }) => url)).toEqual([
+      '/flaky',
+      '/flaky',
+      '/dropped',
+      '/dropped',
+      '/post',
+    ]);
+  } finally {
+    fake.server.close();
+  }
 });
 
 test('ordinary text that starts like a mirror header is still copied both ways', () => {
