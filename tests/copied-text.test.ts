@@ -45,18 +45,23 @@ const comment = {
 const none = new Set<number>();
 const codePoints = (text: string) => Array.from(text).length;
 
-/* A quadratic pass grows about 16 times from n to 4n, a linear one about 4; 10 leaves room for noise. */
-const growth = (run: (n: number) => void, n: number) => {
-  const time = (size: number) =>
+/* Defusing time over one simple pass on the same text: about 10 to 30 when linear, over 20,000 for a repeated strip. */
+const costOverOnePass = (text: string) => {
+  const best = (run: () => void) =>
     Math.min(
       ...[1, 2, 3].map(() => {
         const started = performance.now();
-        run(size);
+        run();
         return performance.now() - started;
       }),
     );
-  time(n);
-  return time(4 * n) / Math.max(time(n), 1);
+  return (
+    best(() => defuseText(text)) /
+    Math.max(
+      best(() => text.replace(/x/g, 'y').toUpperCase()),
+      0.01,
+    )
+  );
 };
 
 /* Security: a copy must never notify anyone, link an issue, add a backlink or claim a post. */
@@ -183,13 +188,7 @@ describe('copied text', () => {
     ['mixed text', (n: number) => 'a/@#1&#64;github.com '.repeat(n)],
   ] as const)
     test(`${name} are defused in linear time`, () => {
-      assert.ok(
-        growth(
-          (n) => githubCommentBody({ ...reply, raw: make(n) }, POST_URL),
-          2_000,
-        ) < 10,
-        'defusing grows faster than linear',
-      );
+      assert.ok(costOverOnePass(make(20_000)) < 300, 'defusing is not linear');
     });
 });
 
