@@ -1483,3 +1483,46 @@ test('a deeply nested marker is defused in linear time', () => {
     600,
   ]);
 });
+
+test('a person quoting the comment link in the topic does not stop the comment', async () => {
+  const fake = await fakeApi((method, url) => {
+    if (url.startsWith('/repos/o/r/issues/3/comments'))
+      return { status: 200, body: [topicLink(42)] };
+    if (url === '/t/42.json')
+      return {
+        status: 200,
+        body: { id: 42, slug: 'crash', post_stream: { stream: [1, 7] } },
+      };
+    if (url.startsWith('/t/42/posts.json'))
+      return {
+        status: 200,
+        body: {
+          post_stream: {
+            posts: [
+              firstPost,
+              {
+                id: 7,
+                post_number: 2,
+                post_type: 1,
+                username: 'nami',
+                raw: `See\n\n${human.html_url}`,
+              },
+            ],
+          },
+        },
+      };
+    if (url === '/posts.json' && method === 'POST')
+      return { status: 200, body: { id: 8 } };
+    return { status: 500, body: { unexpected: `${method} ${url}` } };
+  });
+  try {
+    const run = await runMode('to-forum', fake.origin, {
+      comment: human,
+      issue: { number: 3 },
+    });
+    expect(run.code, run.stderr).toBe(0);
+    expect(fake.hits.filter(({ method }) => method === 'POST')).toHaveLength(1);
+  } finally {
+    fake.server.close();
+  }
+});

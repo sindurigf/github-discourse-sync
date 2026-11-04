@@ -451,7 +451,9 @@ const toForum = async () => {
   const { get, post } = forum();
   const { posts } = await topicPosts(get, topicId);
   const footer = `\n\n${comment.html_url}`;
-  if (posts.some(({ raw }) => (raw ?? '').trimEnd().endsWith(footer)))
+  const copied = ({ raw }) =>
+    isGithubMirror(raw) && (raw ?? '').trimEnd().endsWith(footer);
+  if (posts.some(copied))
     return console.log(`Comment ${comment.id} is already in topic ${topicId}.`);
   const created = await post(
     '/posts.json',
