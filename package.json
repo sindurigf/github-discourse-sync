@@ -9,10 +9,9 @@
   "scripts": {
     "format": "prettier --write .",
     "lint": "prettier --check . && tsc --noEmit",
-    "test": "playwright test"
+    "test": "node --test 'tests/*.test.ts'"
   },
   "devDependencies": {
-    "@playwright/test": "1.63.0",
     "@types/node": "24.19.2",
     "js-yaml": "5.5.0",
     "prettier": "3.9.10",

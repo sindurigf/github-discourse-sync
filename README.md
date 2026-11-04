@@ -180,7 +180,7 @@ gh secret set DISCOURSE_API_USERNAME
 ```sh
 npm ci
 npm run lint   # Prettier, and TypeScript over the tests
-npm test       # Playwright test runner, no browser
+npm test       # Node's built-in test runner
 ```
 
 ## License
