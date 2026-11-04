@@ -517,7 +517,7 @@ const recentTopics = async (get, categoryId, cutoff) => {
   for (let page = 0; ; page += 1) {
     const list = await get(
       `/c/${categoryId}/l/latest.json?page=${page}`,
-      'topics: read lists',
+      'topics: read_lists',
     );
     const { recent, older } = splitByActivity(
       list.topic_list?.topics ?? [],
