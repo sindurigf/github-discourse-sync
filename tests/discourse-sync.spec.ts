@@ -1117,3 +1117,24 @@ test('a pinned topic bumped inside the window syncs, an old pinned one neither s
     older: false,
   });
 });
+
+test('ordinary text that starts like a mirror header is still copied both ways', () => {
+  expect(
+    shouldMirrorComment({ ...human, body: 'I wrote on the forum: see logs' }),
+  ).toBe(true);
+  expect(
+    shouldMirrorPost(
+      { ...reply, raw: 'I wrote on GitHub: see logs' },
+      API_USER,
+      new Set(),
+    ),
+  ).toBe(true);
+  expect(
+    shouldMirrorPost(
+      { ...reply, username: 'old-bot', raw: forumReplyBody(human) },
+      API_USER,
+      new Set(),
+    ),
+    'a mirror an earlier API user posted is still recognized',
+  ).toBe(false);
+});

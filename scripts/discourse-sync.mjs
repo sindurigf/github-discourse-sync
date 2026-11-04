@@ -15,8 +15,8 @@ export const PR_LINK_COMMENT_PREFIX =
   'Discussion for this pull request is open on the forum: ';
 const LINK_PREFIXES = [LINK_COMMENT_PREFIX, PR_LINK_COMMENT_PREFIX];
 export const BOT_LOGIN = 'github-actions[bot]';
-const GITHUB_HEADER = /^\S+ wrote on GitHub:/;
-const FORUM_HEADER = /^\S+ wrote on the forum:/;
+const GITHUB_HEADER = /^\S+ wrote on GitHub:\n/;
+const GITHUB_COMMENT_FOOTER = /\n\S+#issuecomment-\d+$/;
 const MARKER = /<!-- discourse-post:(\d+) -->/g;
 const TOPIC_TITLE = /^GitHub (issue|pull request) #(\d+):/;
 const TOPIC_URL = /\/t\/[^/\s]+\/(\d+)\b/;
@@ -187,8 +187,12 @@ export const topicIdFromComments = (comments) => {
 export const shouldMirrorComment = ({ user, body }) =>
   user?.login !== BOT_LOGIN &&
   user?.type !== 'Bot' &&
-  !FORUM_HEADER.test(body ?? '') &&
   ![...(body ?? '').matchAll(MARKER)].length;
+
+/** A forum post forumReplyBody wrote, under any API username: the header and the comment link last. */
+const isGithubMirror = (raw) =>
+  GITHUB_HEADER.test(raw ?? '') &&
+  GITHUB_COMMENT_FOOTER.test((raw ?? '').trimEnd());
 
 /** A close, merge or reopen reply from topicStateChange, whichever user posted it. */
 export const isStateReply = (raw) => {
@@ -207,7 +211,7 @@ export const shouldMirrorPost = (post, apiUsername, alreadyMirrored) =>
   !post.hidden &&
   !post.deleted_at &&
   post.username?.toLowerCase() !== apiUsername.toLowerCase() &&
-  !GITHUB_HEADER.test(post.raw ?? '') &&
+  !isGithubMirror(post.raw) &&
   !isStateReply(post.raw) &&
   !alreadyMirrored.has(post.id);
 
