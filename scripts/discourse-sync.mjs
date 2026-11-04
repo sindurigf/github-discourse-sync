@@ -328,8 +328,8 @@ const backoffMs = (attempt, retryAfterHeader) => {
 };
 
 /**
- * Retries 429 for any method, and a 5xx, timeout or dropped connection for a GET only,
- * since a repeated POST could post twice. A 403 names the scope it needs.
+ * Retries a 429 for any method after its Retry-After, up to the cap, and a 5xx, timeout or
+ * dropped connection for a GET only, since a repeated POST could post twice. A 403 names the scope it needs.
  */
 export const request = async (url, init, scopeHint) => {
   const method = init?.method ?? 'GET';
@@ -369,12 +369,23 @@ export const request = async (url, init, scopeHint) => {
       attempt -= 1;
       continue;
     }
-    const transient =
-      response.status === HTTP_TOO_MANY ||
-      (method === 'GET' && response.status >= HTTP_SERVER_ERROR);
-    if (transient && canRetry) {
+    const retryAfter = response.headers.get('retry-after');
+    const retryAfterS = Number(retryAfter);
+    /* A 429 waits only as long as its Retry-After says, and only up to the cap; otherwise the caller stops. */
+    const waitable429 =
+      response.status === HTTP_TOO_MANY &&
+      retryAfter !== null &&
+      Number.isFinite(retryAfterS) &&
+      retryAfterS <= MAX_RETRY_AFTER_S;
+    const serverError =
+      method === 'GET' && response.status >= HTTP_SERVER_ERROR;
+    if ((waitable429 || serverError) && canRetry) {
       await response.body?.cancel();
-      await wait(backoffMs(attempt, response.headers.get('retry-after')));
+      await wait(
+        waitable429
+          ? Math.max(retryAfterS, 0) * MS_PER_S
+          : backoffMs(attempt, retryAfter),
+      );
       continue;
     }
     if (response.ok) return response;
@@ -389,7 +400,17 @@ export const request = async (url, init, scopeHint) => {
       new Error(
         `${method} ${current} answered ${response.status}.${hint} ${text.slice(0, ERROR_BODY_CHARS)}`,
       ),
-      { status: response.status, url: current },
+      {
+        status: response.status,
+        url: current,
+        /* GitHub can send a secondary rate limit as a 403 or 429 with only a message (docs.github.com, rate limits for the REST API). */
+        rateLimited:
+          response.status === HTTP_TOO_MANY ||
+          (response.status === HTTP_FORBIDDEN &&
+            (response.headers.get('x-ratelimit-remaining') === '0' ||
+              response.headers.has('retry-after') ||
+              /rate limit/i.test(text))),
+      },
     );
   }
 };
@@ -525,11 +546,12 @@ const topicPosts = async (get, topicId) => {
   return { topic, posts };
 };
 
-/* Past the deadline, or GitHub rate-limits (403 or 429): every later topic would fail too. A forum error skips one topic. */
+/* Past the deadline, or GitHub rate-limits: every later topic would fail too, and calling on risks a ban. */
 const stopsTheRun = (error, githubApi) =>
   error.deadline === true ||
-  ([HTTP_FORBIDDEN, HTTP_TOO_MANY].includes(error.status) &&
-    error.url?.startsWith(`${githubApi}/repos/`));
+  (error.rateLimited === true &&
+    error.url !== undefined &&
+    new URL(error.url).origin === new URL(githubApi).origin);
 
 const toGithub = async () => {
   const categoryId = parseCategoryId(required('DISCOURSE_CATEGORY_ID'));
