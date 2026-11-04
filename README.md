@@ -118,19 +118,23 @@ gh secret set DISCOURSE_API_USERNAME
   public repository. That means anyone can open a topic or post to the forum.
 - Forum replies in the synced category become public on GitHub, even when the
   forum needs a login.
-- Copied text gets a zero-width space after each `@` that starts a name, so
-  nobody gets notified. The space also lands inside code, so a copied command
-  with an `@` needs retyping.
+- Copied text gets a zero-width space after each `@` that starts a name, and
+  `&` in an HTML entity for `@`, `#`, `:`, `/` or `.` becomes `&amp;`, so
+  nobody gets notified. Links are left whole.
 - In forum replies copied to GitHub, `github.com` links point to
   `redirect.github.com` and `owner/repo#N` gets a zero-width space, so a copy
   adds no backlink to another repository. A plain `#N` still links to an issue
   in this repository.
+- These changes also apply inside code, so a copied command with an `@`, a
+  `github.com` link or such an entity needs editing.
 - Edits and deletions are not copied.
 - Review comments on code lines and review summaries are not copied.
 - Comments made before a pull request has its topic, such as while it is a
   first draft, are not copied.
 - Text that would make a forum post longer than 32,000 characters is
-  shortened, with a note that the full text is on GitHub.
+  shortened, with a note that the full text is on GitHub. A forum reply longer
+  than a GitHub comment, 65,536 characters, is shortened with a note that the
+  full text is on the forum.
 - If you change `DISCOURSE_API_USERNAME`, the old user's replies stay where
   they are and are not copied to GitHub again. A reopen still unaccepts the old
   user's close or merge reply, and a repeated run reuses it.
