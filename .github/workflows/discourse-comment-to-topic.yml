@@ -22,7 +22,7 @@ concurrency:
 jobs:
   to-forum:
     name: Mirror the comment to Discourse
-    if: vars.DISCOURSE_URL != '' && vars.DISCOURSE_CATEGORY_ID != ''
+    if: vars.DISCOURSE_URL != '' && vars.DISCOURSE_CATEGORY_ID != '' && github.event.comment.user.type != 'Bot'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
 

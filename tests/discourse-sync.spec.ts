@@ -1298,3 +1298,14 @@ test('a re-run of a comment already on the forum posts nothing', async () => {
     fake.server.close();
   }
 });
+
+test('discourse-comment-to-topic.yml skips comments from bots', () => {
+  const job = (
+    load(
+      readFileSync('.github/workflows/discourse-comment-to-topic.yml', 'utf8'),
+    ) as {
+      jobs: Record<string, { if?: string }>;
+    }
+  ).jobs['to-forum'];
+  expect(job.if).toContain("github.event.comment.user.type != 'Bot'");
+});
