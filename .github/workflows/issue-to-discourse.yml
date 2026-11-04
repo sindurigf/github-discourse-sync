@@ -1,12 +1,14 @@
 name: Create Discourse topic for new issues
 
 # Opt-in: a repository without the DISCOURSE_* variables skips the job
-# (README.md#setup).
+# (README.md#setup). Runs the default branch's script on the event file, so the
+# issue text never reaches a shell (README.md#security).
 on:
   issues:
     types: [opened]
 
 permissions:
+  contents: read
   issues: write
 
 concurrency:
@@ -17,108 +19,30 @@ concurrency:
   queue: max
 
 jobs:
-  create-topic:
+  open-topic:
     name: Create Discourse topic
-    if: vars.DISCOURSE_URL != '' && vars.DISCOURSE_CATEGORY_ID != ''
+    if: >-
+      vars.DISCOURSE_URL != '' && vars.DISCOURSE_CATEGORY_ID != '' &&
+      github.event.issue.user.type != 'Bot'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
 
     steps:
-      - name: Create topic in Discourse
-        id: discourse
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: '.nvmrc'
+
+      - name: Open the topic and link it on the issue
         env:
           DISCOURSE_URL: ${{ vars.DISCOURSE_URL }}
           DISCOURSE_CATEGORY_ID: ${{ vars.DISCOURSE_CATEGORY_ID }}
           DISCOURSE_API_KEY: ${{ secrets.DISCOURSE_API_KEY }}
           DISCOURSE_API_USERNAME: ${{ secrets.DISCOURSE_API_USERNAME }}
-          GH_TOKEN: ${{ github.token }}
-          ISSUE_NUMBER: ${{ github.event.issue.number }}
-          ISSUE_TITLE: ${{ github.event.issue.title }}
-          ISSUE_BODY: ${{ github.event.issue.body }}
-          ISSUE_URL: ${{ github.event.issue.html_url }}
-          ISSUE_AUTHOR: ${{ github.event.issue.user.login }}
-        run: |
-          set -euo pipefail
-          if [ -z "$DISCOURSE_API_KEY" ] || [ -z "$DISCOURSE_API_USERNAME" ]; then
-            echo "::error::Set the DISCOURSE_API_KEY and DISCOURSE_API_USERNAME secrets."
-            exit 1
-          fi
-          linked=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/${ISSUE_NUMBER}/comments" \
-            --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("Discussion for this issue is open on the forum: "))) | .id')
-          if [ -n "$linked" ]; then
-            echo "#${ISSUE_NUMBER} already has a forum topic."
-            exit 0
-          fi
-          base="${DISCOURSE_URL%/}"
-          # Must match topicExternalId in scripts/discourse-sync.mjs.
-          repo_key=$(printf '%s' "$GITHUB_REPOSITORY" | sha256sum | cut -c1-12)
-          external_id="gh-${repo_key}-issue-${ISSUE_NUMBER}"
-          # Not followed: curl -L would send Api-Key to any host the redirect names.
-          lookup=$(curl -sS --max-time 30 -o /dev/null -w '%{http_code} %{redirect_url}' \
-            "${base}/t/external_id/${external_id}.json" \
-            -H "Api-Key: ${DISCOURSE_API_KEY}" \
-            -H "Api-Username: ${DISCOURSE_API_USERNAME}")
-          status="${lookup%% *}"
-          location="${lookup#* }"
-          if [ "$status" = "301" ] && [[ "$location" == "${base}/t/"*.json ]]; then
-            echo "topic_url=${location%.json}" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          if [ "$status" = "403" ]; then
-            echo "::error::Discourse answered 403 for topic ${external_id}. Check the topics read scope and that the sync user can see the category."
-            exit 1
-          fi
-          if [ "$status" != "404" ]; then
-            echo "::error::Discourse answered ${lookup} for topic ${external_id}."
-            exit 1
-          fi
-          if [[ ! "$DISCOURSE_CATEGORY_ID" =~ ^[1-9][0-9]*$ ]]; then
-            echo "::error::Set DISCOURSE_CATEGORY_ID to the category's number, such as 5."
-            exit 1
-          fi
-          # FORUM_MAX_POST_CHARS and TRUNCATED_NOTE in scripts/discourse-sync.mjs.
-          max_chars=32000
-          note=$'\n\n(Shortened; the full text is on GitHub.)'
-          payload=$(jq -n \
-            --arg title "GitHub issue #${ISSUE_NUMBER}: ${ISSUE_TITLE}" \
-            --arg body "${ISSUE_BODY:-}" \
-            --arg url "$ISSUE_URL" \
-            --arg author "$ISSUE_AUTHOR" \
-            --arg external_id "$external_id" \
-            --arg note "$note" \
-            --argjson max_chars "$max_chars" \
-            --argjson category "$DISCOURSE_CATEGORY_ID" \
-            '("Opened by " + $author + " on GitHub:\n\n" + $url + "\n\n---\n\n") as $head
-            | (if $body == "" then "_No description provided._" else ($body | gsub("(?<a>^|[^A-Za-z0-9_`/])@(?<b>[A-Za-z0-9_-])"; "\(.a)@\u200b\(.b)")) end) as $text
-            | { title: ($title | if length > 255 then .[0:254] + "…" else . end),
-                category: $category,
-                external_id: $external_id,
-                raw: (if ($head + $text | length) > $max_chars
-                  then $head + $text[0:($max_chars - ($head | length) - ($note | length))] + $note
-                  else $head + $text end) }')
-          if ! response=$(curl -sS --max-time 30 --fail-with-body -X POST "${base}/posts.json" \
-            -H "Content-Type: application/json" \
-            -H "Api-Key: ${DISCOURSE_API_KEY}" \
-            -H "Api-Username: ${DISCOURSE_API_USERNAME}" \
-            -d "$payload"); then
-            echo "::error::Discourse refused the topic. A 403 means the API key lacks the topics write scope. ${response}"
-            exit 1
-          fi
-          topic_id=$(printf '%s' "$response" | jq -r '.topic_id // empty')
-          topic_slug=$(printf '%s' "$response" | jq -r '.topic_slug // empty')
-          if [ -z "$topic_id" ] || [ -z "$topic_slug" ]; then
-            echo "::error::Discourse answered without a topic_id or topic_slug: ${response}"
-            exit 1
-          fi
-          echo "topic_url=${base}/t/${topic_slug}/${topic_id}" >> "$GITHUB_OUTPUT"
-
-      # scripts/discourse-sync.mjs finds the topic by this text (LINK_COMMENT_PREFIX).
-      - name: Comment on the issue with the topic link
-        if: steps.discourse.outputs.topic_url != ''
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TOPIC_URL: ${{ steps.discourse.outputs.topic_url }}
-          ISSUE_NUMBER: ${{ github.event.issue.number }}
-        run: |
-          gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" \
-            --body "Discussion for this issue is open on the forum: ${TOPIC_URL}"
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/discourse-sync.mjs open-topic

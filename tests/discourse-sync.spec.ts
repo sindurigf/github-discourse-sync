@@ -25,8 +25,8 @@ import {
   githubCommentBody,
   markerOf,
   mirroredPostIds,
+  newTopic,
   parseCategoryId,
-  pullRequestTopic,
   repoKey,
   request,
   shouldMirrorComment,
@@ -304,35 +304,44 @@ test('a draft or bot pull request opens no topic', () => {
 });
 
 test('a pull request topic fits Discourse limits and pings no one', () => {
-  const topic = pullRequestTopic({
-    number: 12,
-    title: 'x'.repeat(400),
-    body: '@luffy please review',
-    html_url: 'https://github.com/o/r/pull/12',
-    user: { login: 'robin' },
-  });
+  const topic = newTopic(
+    {
+      number: 12,
+      title: 'x'.repeat(400),
+      body: '@luffy please review',
+      html_url: 'https://github.com/o/r/pull/12',
+      user: { login: 'robin' },
+    },
+    true,
+  );
   expect(topic.title.startsWith('GitHub pull request #12: ')).toBe(true);
   expect(Array.from(topic.title).length).toBeLessThanOrEqual(255);
-  const emoji = pullRequestTopic({
-    number: 12,
-    title: '🐈'.repeat(300),
-    body: '',
-    html_url: 'u',
-    user: { login: 'r' },
-  }).title;
+  const emoji = newTopic(
+    {
+      number: 12,
+      title: '🐈'.repeat(300),
+      body: '',
+      html_url: 'u',
+      user: { login: 'r' },
+    },
+    true,
+  ).title;
   expect(emoji, 'a cut must not leave half an emoji').not.toMatch(
     /[\uD800-\uDBFF](?![\uDC00-\uDFFF])/,
   );
   expect(topic.raw).toContain('https://github.com/o/r/pull/12');
   expect(topic.raw).not.toMatch(/(^|[^\w`/])@[\w-]/);
   expect(
-    pullRequestTopic({
-      number: 1,
-      title: 't',
-      body: null,
-      html_url: 'u',
-      user: { login: 'r' },
-    }).raw,
+    newTopic(
+      {
+        number: 1,
+        title: 't',
+        body: null,
+        html_url: 'u',
+        user: { login: 'r' },
+      },
+      true,
+    ).raw,
   ).toContain('_No description provided._');
 });
 
@@ -414,6 +423,29 @@ test('a pull request link comment from a person binds no topic', () => {
     ]),
   ).toBeNull();
 });
+
+for (const kind of ['issue', 'pull request'] as const) {
+  test(`a ${kind} body longer than a forum post is shortened with the note`, () => {
+    for (const body of ['x'.repeat(70_000), '😀'.repeat(70_000)]) {
+      const { raw } = newTopic(
+        {
+          number: 12,
+          title: 't',
+          body,
+          html_url: 'https://github.com/o/r/pull/12',
+          user: { login: 'robin' },
+        },
+        kind === 'pull request',
+      );
+      expect(Array.from(raw).length).toBeLessThanOrEqual(FORUM_MAX_POST_CHARS);
+      expect(raw).toContain('https://github.com/o/r/pull/12');
+      expect(raw.endsWith(TRUNCATED_NOTE)).toBe(true);
+      expect(raw, 'a cut must not split a surrogate pair').not.toMatch(
+        /[\uD800-\uDBFF](?![\uDC00-\uDFFF])/,
+      );
+    }
+  });
+}
 
 /* Security: pull_request_target runs with secrets, so it must never check out the pull request. */
 test('every pull_request_target checkout has no ref or the default branch ref', () => {
@@ -1325,6 +1357,57 @@ const openedIssue = {
   },
 };
 
+test('a new issue opens a topic with its own external_id and is linked from the issue', async () => {
+  const fake = await fakeApi((method, url) => {
+    if (url.startsWith('/repos/o/r/issues/3/comments'))
+      return method === 'POST' ? { status: 201 } : { status: 200, body: [] };
+    if (url === `/t/external_id/${topicExternalId('o/r', 3, false)}.json`)
+      return { status: 404, body: { errors: ['Not found'] } };
+    if (url === '/posts.json' && method === 'POST')
+      return { status: 200, body: { topic_id: 80, topic_slug: 'crash' } };
+    return { status: 500, body: { unexpected: `${method} ${url}` } };
+  });
+  try {
+    const run = await runMode('open-topic', fake.origin, openedIssue);
+    expect(run.code).toBe(0);
+    const created = JSON.parse(
+      fake.hits.find(({ url }) => url === '/posts.json')?.body ?? '{}',
+    );
+    expect(created).toMatchObject({
+      title: 'GitHub issue #3: Crash',
+      category: 5,
+      external_id: topicExternalId('o/r', 3, false),
+    });
+    expect(created.raw).toContain('https://github.com/o/r/issues/3');
+    expect(created.raw).toContain('@\u200bnami');
+    expect(linkComments(fake.hits)).toEqual([
+      `${LINK_COMMENT_PREFIX}${fake.origin}/t/crash/80`,
+    ]);
+  } finally {
+    fake.server.close();
+  }
+});
+
+test('open-topic refuses a category id that is not a positive whole number before posting', async () => {
+  const fake = await fakeApi((method, url) => {
+    if (url.startsWith('/repos/o/r/issues/3/comments'))
+      return { status: 200, body: [] };
+    if (url.startsWith('/t/external_id/'))
+      return { status: 404, body: { errors: ['Not found'] } };
+    return { status: 500, body: { unexpected: `${method} ${url}` } };
+  });
+  try {
+    const run = await runMode('open-topic', fake.origin, openedIssue, {
+      DISCOURSE_CATEGORY_ID: '5abc',
+    });
+    expect(run.code).not.toBe(0);
+    expect(run.stderr).toContain('Set DISCOURSE_CATEGORY_ID');
+    expect(fake.hits.filter(({ method }) => method === 'POST')).toEqual([]);
+  } finally {
+    fake.server.close();
+  }
+});
+
 test('a person quoting the comment link in the topic does not stop the comment', async () => {
   const fake = await fakeApi((method, url) => {
     if (url.startsWith('/repos/o/r/issues/3/comments'))
@@ -1507,6 +1590,28 @@ test('a request GitHub or Discourse never received, such as a bad header, is not
   expect(performance.now() - started, 'a bad header was retried').toBeLessThan(
     2_000,
   );
+});
+
+test('a re-run for an issue links the topic an earlier run opened instead of posting', async () => {
+  const fake = await fakeApi((method, url) => {
+    if (url.startsWith('/repos/o/r/issues/3/comments'))
+      return method === 'POST' ? { status: 201 } : { status: 200, body: [] };
+    if (url === `/t/external_id/${topicExternalId('o/r', 3, false)}.json`)
+      return { status: 301, headers: { location: '/t/crash/80.json' } };
+    if (url === '/t/crash/80.json')
+      return { status: 200, body: { id: 80, slug: 'crash' } };
+    return { status: 500, body: { unexpected: `${method} ${url}` } };
+  });
+  try {
+    const run = await runMode('open-topic', fake.origin, openedIssue);
+    expect(run.code, run.stderr).toBe(0);
+    expect(fake.hits.some(({ url }) => url === '/posts.json')).toBe(false);
+    expect(linkComments(fake.hits)).toEqual([
+      `${LINK_COMMENT_PREFIX}${fake.origin}/t/crash/80`,
+    ]);
+  } finally {
+    fake.server.close();
+  }
 });
 
 test('each mode stops at its run deadline, before its job times out', () => {
@@ -1730,117 +1835,21 @@ test('a mirror-shaped post from someone other than the API user does not stop th
   }
 });
 
-test('the link comment text in issue-to-discourse.yml matches the script', () => {
-  const workflow = readFileSync(
-    '.github/workflows/issue-to-discourse.yml',
-    'utf8',
-  );
-  expect(
-    workflow,
-    'issue-to-discourse.yml no longer posts the text discourse-sync.mjs looks for',
-  ).toContain(LINK_COMMENT_PREFIX);
-});
-
-test('a pull request body longer than a forum post is shortened', () => {
-  const { raw } = pullRequestTopic({
-    number: 12,
-    title: 't',
-    body: 'x'.repeat(70_000),
-    html_url: 'https://github.com/o/r/pull/12',
-    user: { login: 'robin' },
-  });
-  expect(Array.from(raw).length).toBeLessThanOrEqual(32_000);
-  expect(raw).toContain('https://github.com/o/r/pull/12');
-  expect(raw.endsWith(TRUNCATED_NOTE)).toBe(true);
-});
-
-test('issue-to-discourse.yml builds the external_id the script would give an issue', async () => {
-  const run =
-    steps(
-      workflows().find(({ name }) => name === 'issue-to-discourse.yml')!
-        .workflow,
-    ).find((step) => step.run?.includes('external_id='))?.run ?? '';
-  const idScript = run.match(/^ *repo_key=.*\n *external_id=.*$/m)?.[0];
-  expect(
-    idScript,
-    'the repo_key and external_id lines are missing',
-  ).toBeDefined();
-  for (const repository of ['o/r', 'example-owner/a.b_c-d']) {
-    const { stdout } = await promisify(execFile)(
-      'bash',
-      ['-euo', 'pipefail', '-c', `${idScript}\nprintf '%s' "$external_id"`],
-      {
-        env: {
-          PATH: process.env['PATH'],
-          GITHUB_REPOSITORY: repository,
-          ISSUE_NUMBER: '3',
-        },
+test('an issue opened by a bot opens no topic', async () => {
+  const fake = await fakeApi((method, url) => ({
+    status: 500,
+    body: { unexpected: `${method} ${url}` },
+  }));
+  try {
+    const run = await runMode('open-topic', fake.origin, {
+      issue: {
+        ...openedIssue.issue,
+        user: { login: 'renovate[bot]', type: 'Bot' },
       },
-    );
-    expect(stdout).toBe(topicExternalId(repository, 3, false));
-  }
-});
-
-/* Function: the shell path for issues keeps the same category rule, post limit and mention rule as the script. */
-const issueTopicPayload = async (
-  body: string,
-  categoryId = '5',
-): Promise<{ raw: string }> => {
-  const run =
-    steps(
-      workflows().find(({ name }) => name === 'issue-to-discourse.yml')!
-        .workflow,
-    ).find((step) => step.run?.includes('payload=$(jq'))?.run ?? '';
-  const payloadScript = run.match(
-    /^ *if \[\[ ! "\$DISCOURSE_CATEGORY_ID"[\s\S]*?\}'\)$/m,
-  )?.[0];
-  expect(
-    payloadScript,
-    'the category check and jq payload are missing',
-  ).toBeDefined();
-  expect(Number(run.match(/^\s*max_chars=(\d+)$/m)?.[1])).toBe(
-    FORUM_MAX_POST_CHARS,
-  );
-  const { stdout } = await promisify(execFile)(
-    'bash',
-    ['-euo', 'pipefail', '-c', `${payloadScript}\nprintf '%s' "$payload"`],
-    {
-      env: {
-        PATH: process.env['PATH'],
-        DISCOURSE_CATEGORY_ID: categoryId,
-        ISSUE_NUMBER: '3',
-        ISSUE_TITLE: 'Crash',
-        ISSUE_BODY: body,
-        ISSUE_URL: 'https://github.com/o/r/issues/3',
-        ISSUE_AUTHOR: 'robin',
-        external_id: topicExternalId('o/r', 3, false),
-      },
-      maxBuffer: 1024 * 1024,
-    },
-  );
-  return JSON.parse(stdout);
-};
-
-test('an issue body longer than a forum post is shortened with the note', async () => {
-  const { raw } = await issueTopicPayload('x'.repeat(65_536));
-  expect(Array.from(raw).length).toBeLessThanOrEqual(FORUM_MAX_POST_CHARS);
-  expect(raw).toContain('https://github.com/o/r/issues/3');
-  expect(raw.endsWith(TRUNCATED_NOTE)).toBe(true);
-});
-
-test('an issue body that fits is posted whole, with mentions defused', async () => {
-  const { raw } = await issueTopicPayload('Ping @robin about it.');
-  expect(raw).toContain('Ping @​robin about it.');
-  expect(raw).not.toContain(TRUNCATED_NOTE.trim());
-});
-
-test('issue-to-discourse.yml refuses a category id that is not a positive whole number', async () => {
-  for (const value of ['github', '0', '5.5']) {
-    await expect(
-      issueTopicPayload('Body', value),
-      `${value} was accepted`,
-    ).rejects.toMatchObject({
-      stdout: expect.stringContaining('::error::Set DISCOURSE_CATEGORY_ID'),
     });
+    expect(run.code, run.stderr).toBe(0);
+    expect(fake.hits).toEqual([]);
+  } finally {
+    fake.server.close();
   }
 });
