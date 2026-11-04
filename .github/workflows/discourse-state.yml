@@ -2,7 +2,7 @@ name: Close and reopen Discourse topics
 
 # Mirrors a close, merge or reopen on GitHub to the forum topic. pull_request_target
 # runs the default branch's files and never checks out the pull request's code
-# (README.md#setup).
+# (README.md#security).
 on:
   issues:
     types: [closed, reopened]

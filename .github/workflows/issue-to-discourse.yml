@@ -63,18 +63,34 @@ jobs:
             echo "topic_url=${location%.json}" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          if [ "$status" = "403" ]; then
+            echo "::error::Discourse answered 403 for topic ${external_id}. The API key needs the topics read and write scopes."
+            exit 1
+          fi
           if [ "$status" != "404" ]; then
             echo "::error::Discourse answered ${lookup} for topic ${external_id}."
             exit 1
           fi
+          # FORUM_MAX_POST_CHARS and TRUNCATED_NOTE in scripts/discourse-sync.mjs.
+          max_chars=32000
+          note=$'\n\n(Shortened; the full text is on GitHub.)'
           payload=$(jq -n \
             --arg title "GitHub issue #${ISSUE_NUMBER}: ${ISSUE_TITLE}" \
             --arg body "${ISSUE_BODY:-}" \
             --arg url "$ISSUE_URL" \
             --arg author "$ISSUE_AUTHOR" \
             --arg external_id "$external_id" \
+            --arg note "$note" \
+            --argjson max_chars "$max_chars" \
             --argjson category "$DISCOURSE_CATEGORY_ID" \
-            '{ title: ($title | if length > 255 then .[0:254] + "…" else . end), category: $category, external_id: $external_id, raw: ("Opened by " + $author + " on GitHub:\n\n" + $url + "\n\n---\n\n" + (if $body == "" then "_No description provided._" else ($body | gsub("(?<a>^|[^\\w`/])@(?<b>[\\w-])"; "\(.a)@\u200b\(.b)")) end)) }')
+            '("Opened by " + $author + " on GitHub:\n\n" + $url + "\n\n---\n\n") as $head
+            | (if $body == "" then "_No description provided._" else ($body | gsub("(?<a>^|[^\\w`/])@(?<b>[\\w-])"; "\(.a)@\u200b\(.b)")) end) as $text
+            | { title: ($title | if length > 255 then .[0:254] + "…" else . end),
+                category: $category,
+                external_id: $external_id,
+                raw: (if ($head + $text | length) > $max_chars
+                  then $head + $text[0:($max_chars - ($head | length) - ($note | length))] + $note
+                  else $head + $text end) }')
           if ! response=$(curl -sS --max-time 30 --fail-with-body -X POST "${base}/posts.json" \
             -H "Content-Type: application/json" \
             -H "Api-Key: ${DISCOURSE_API_KEY}" \

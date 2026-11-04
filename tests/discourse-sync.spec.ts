@@ -29,6 +29,9 @@ import {
   splitByActivity,
   STATUS_SCOPE,
   topicIdFromComments,
+  FORUM_MAX_POST_CHARS,
+  TRUNCATED_NOTE,
+  parseCategoryId,
 } from '../scripts/discourse-sync.mjs';
 
 /* Function: the issue and forum mirror never loops, never posts twice and never pings anyone. */
@@ -430,9 +433,7 @@ test('a pull request body longer than a forum post is shortened', () => {
   });
   expect(Array.from(raw).length).toBeLessThanOrEqual(32_000);
   expect(raw).toContain('https://github.com/o/r/pull/12');
-  expect(raw.endsWith('(Shortened; the full comment is on GitHub.)')).toBe(
-    true,
-  );
+  expect(raw.endsWith(TRUNCATED_NOTE)).toBe(true);
 });
 
 /* Security: pull_request_target runs with secrets, so it must never check out the pull request. */
@@ -922,5 +923,116 @@ test('a forum topic whose issue was deleted is skipped instead of failing the ru
     ).not.toContainEqual(expect.stringMatching(/comments|^\/t\//));
   } finally {
     fake.server.close();
+  }
+});
+
+type Step = { name?: string; uses?: string; run?: string };
+type Job = { steps?: Step[] };
+type Workflow = { on?: unknown; jobs?: Record<string, Job> };
+const WORKFLOW_DIR = '.github/workflows';
+const workflows = (): { name: string; workflow: Workflow }[] =>
+  readdirSync(WORKFLOW_DIR)
+    .filter((name) => name.endsWith('.yml'))
+    .map((name) => ({
+      name,
+      workflow: load(
+        readFileSync(`${WORKFLOW_DIR}/${name}`, 'utf8'),
+      ) as Workflow,
+    }));
+const steps = (workflow: Workflow): Step[] =>
+  Object.values(workflow.jobs ?? {}).flatMap((job) => job.steps ?? []);
+
+/* Function: the shell path for issues keeps the same post limit and mention rule as the script. */
+const issueTopicPayload = async (body: string): Promise<{ raw: string }> => {
+  const run =
+    steps(
+      workflows().find(({ name }) => name === 'issue-to-discourse.yml')!
+        .workflow,
+    ).find((step) => step.run?.includes('payload=$(jq'))?.run ?? '';
+  const filter = run.match(/'(\("Opened by "[\s\S]*?\})'\)/)?.[1];
+  const maxChars = run.match(/^\s*max_chars=(\d+)$/m)?.[1];
+  const note = run.match(/^\s*note=\$'(.*)'$/m)?.[1]?.replaceAll('\\n', '\n');
+  expect(filter, 'the jq filter is missing').toBeDefined();
+  expect(Number(maxChars)).toBe(FORUM_MAX_POST_CHARS);
+  expect(note).toBe(TRUNCATED_NOTE);
+  const { stdout } = await promisify(execFile)(
+    'jq',
+    [
+      '-n',
+      ...['--arg', 'title', 'GitHub issue #3: Crash'],
+      ...['--arg', 'body', body],
+      ...['--arg', 'url', 'https://github.com/o/r/issues/3'],
+      ...['--arg', 'author', 'robin'],
+      ...['--arg', 'external_id', 'github-issue-3'],
+      ...['--arg', 'note', note!],
+      ...['--argjson', 'max_chars', maxChars!],
+      ...['--argjson', 'category', '5'],
+      filter!,
+    ],
+    { maxBuffer: 1024 * 1024 },
+  );
+  return JSON.parse(stdout);
+};
+
+test('an issue body longer than a forum post is shortened with the note', async () => {
+  const { raw } = await issueTopicPayload('x'.repeat(65_536));
+  expect(Array.from(raw).length).toBeLessThanOrEqual(FORUM_MAX_POST_CHARS);
+  expect(raw).toContain('https://github.com/o/r/issues/3');
+  expect(raw.endsWith(TRUNCATED_NOTE)).toBe(true);
+});
+
+test('an issue body that fits is posted whole, with mentions defused', async () => {
+  const { raw } = await issueTopicPayload('Ping @robin about it.');
+  expect(raw).toContain('Ping @​robin about it.');
+  expect(raw).not.toContain(TRUNCATED_NOTE.trim());
+});
+
+test('a category id that is not a positive whole number is refused', () => {
+  expect(parseCategoryId('5')).toBe(5);
+  for (const value of ['github', '0', '-1', '5.5', '', undefined]) {
+    expect(
+      () => parseCategoryId(value),
+      `${String(value)} was accepted`,
+    ).toThrow(/DISCOURSE_CATEGORY_ID/);
+  }
+});
+
+/* Security: a run step reads untrusted text from env, never from an expression. */
+test('no run step interpolates a ${{ }} expression', () => {
+  for (const { name, workflow } of workflows()) {
+    for (const step of steps(workflow)) {
+      expect(
+        step.run ?? '',
+        `${name} step "${step.name}" puts an expression in its script`,
+      ).not.toContain('${{');
+    }
+  }
+});
+
+/* Security: a tag can be moved to other code; a commit SHA cannot. */
+test('every action is pinned to a full commit SHA', () => {
+  for (const { name, workflow } of workflows()) {
+    for (const step of steps(workflow)) {
+      if (!step.uses) continue;
+      expect(step.uses, `${name} uses an action by tag or branch`).toMatch(
+        /^[\w.-]+\/[\w.-]+(?:\/[\w./-]+)?@[0-9a-f]{40}$/,
+      );
+    }
+  }
+});
+
+/* Security: a pull_request_target job has the secrets, so no step may fetch the pull request's code. */
+test('no pull_request_target run step fetches the pull request', () => {
+  const fetchesPullRequest =
+    /gh pr checkout|refs\/pull\/|pull\/[^/\s]+\/(?:head|merge)|head\.(?:ref|sha)/;
+  for (const { name, workflow } of workflows()) {
+    if (!JSON.stringify(workflow.on ?? {}).includes('pull_request_target'))
+      continue;
+    for (const step of steps(workflow)) {
+      expect(
+        step.run ?? '',
+        `${name} step "${step.name}" fetches the pull request`,
+      ).not.toMatch(fetchesPullRequest);
+    }
   }
 });

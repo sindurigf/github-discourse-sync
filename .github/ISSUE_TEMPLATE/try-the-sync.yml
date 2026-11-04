@@ -1,13 +1,13 @@
-name: Try the sync
+name: Try the Sync
 description: Open an issue to see its forum topic appear.
 title: 'Test: '
 body:
   - type: markdown
     attributes:
       value: >-
-        This issue, its comments and its close are copied to a public forum
-        topic, and forum replies are copied back here. Do not post anything
-        private. Edits and deletions are not copied.
+        This issue, its comments, and closing or reopening it are copied to a
+        forum topic. Forum replies come back here as comments. Please do not
+        post anything private. Edits and deletions are not copied.
   - type: textarea
     id: body
     attributes:

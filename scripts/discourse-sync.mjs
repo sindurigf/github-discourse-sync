@@ -27,6 +27,8 @@ const MS_PER_HOUR = 3_600_000;
 const POSTS_PER_REQUEST = 100;
 const GITHUB_PAGE_SIZE = 100;
 const MAX_ATTEMPTS = 5;
+/* Keeps a long Retry-After inside the job's timeout-minutes. */
+const MAX_RETRY_AFTER_S = 60;
 const BACKOFF_BASE_MS = 2_000;
 const MS_PER_S = 1_000;
 const REQUEST_TIMEOUT_MS = 30_000;
@@ -35,8 +37,9 @@ const HTTP_NOT_FOUND = 404;
 const HTTP_GONE = 410;
 const ERROR_BODY_CHARS = 500;
 /* Discourse's default max_post_length; GitHub allows 65,536. */
-const FORUM_MAX_POST_CHARS = 32_000;
-const TRUNCATED_NOTE = '\n\n(Shortened; the full comment is on GitHub.)';
+/* issue-to-discourse.yml passes the same limit and note to jq. */
+export const FORUM_MAX_POST_CHARS = 32_000;
+export const TRUNCATED_NOTE = '\n\n(Shortened; the full text is on GitHub.)';
 /* Discourse's default max_topic_title_length. */
 const FORUM_MAX_TITLE_CHARS = 255;
 const TITLE_ELLIPSIS = '…';
@@ -83,7 +86,7 @@ const REOPENED_PREFIX = 'Reopened on GitHub';
 const STATE_PREFIXES = [CLOSED_PREFIX, MERGED_PREFIX, REOPENED_PREFIX];
 const EVENT_TIME_LABEL = 'Event time: ';
 const STATE_REPLY_FIRST_LINE_END = / by \S+\.$/;
-/* Replies posted before the event time existed end with the GitHub link instead. */
+/* Replies from versions without the event time end with the GitHub link instead. */
 const STATE_REPLY_END = new RegExp(
   `\\n(${EVENT_TIME_LABEL}\\S+|https://github\\.com/\\S+)$`,
 );
@@ -224,6 +227,14 @@ const required = (name) => {
   return value;
 };
 
+export const parseCategoryId = (value) => {
+  if (!/^[1-9]\d*$/.test(value ?? ''))
+    throw new Error(
+      `Set DISCOURSE_CATEGORY_ID to the category's number, such as 5, not "${value}".`,
+    );
+  return Number(value);
+};
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
@@ -278,7 +289,7 @@ export const request = async (url, init, scopeHint) => {
       const retryAfter = Number(response.headers.get('retry-after'));
       await sleep(
         Number.isFinite(retryAfter) && retryAfter > 0
-          ? retryAfter * MS_PER_S
+          ? Math.min(retryAfter, MAX_RETRY_AFTER_S) * MS_PER_S
           : BACKOFF_BASE_MS * 2 ** (attempt - 1),
       );
       continue;
@@ -423,7 +434,7 @@ const topicPosts = async (get, topicId) => {
 };
 
 const toGithub = async () => {
-  const categoryId = Number(required('DISCOURSE_CATEGORY_ID'));
+  const categoryId = parseCategoryId(required('DISCOURSE_CATEGORY_ID'));
   const apiUsername = required('DISCOURSE_API_USERNAME');
   const { base, get } = forum();
   const gh = github();
@@ -481,7 +492,7 @@ const openTopic = async () => {
       '/posts.json',
       {
         ...pullRequestTopic(pullRequest),
-        category: Number(required('DISCOURSE_CATEGORY_ID')),
+        category: parseCategoryId(required('DISCOURSE_CATEGORY_ID')),
         external_id: externalId,
       },
       'topics: write',
@@ -604,7 +615,8 @@ const main = async () => {
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   main().catch((error) => {
-    console.error(`::error::${error.message}`);
+    const cause = error.cause ? ` (${error.cause.message ?? error.cause})` : '';
+    console.error(`::error::${error.message}${cause}`);
     process.exit(1);
   });
 }
