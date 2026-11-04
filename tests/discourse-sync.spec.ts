@@ -1440,3 +1440,14 @@ test('open-topic refuses a category id that is not a positive whole number befor
     fake.server.close();
   }
 });
+
+test('mentions written as HTML entities or after a slash are defused', () => {
+  expect(defuseMentions('&#64;octocat')).toBe('&amp;#64;octocat');
+  expect(defuseMentions('&commat;octocat')).toBe('&amp;commat;octocat');
+  expect(defuseMentions('a/@octocat')).toBe('a/@​octocat');
+  expect(
+    defuseMentions('https://forum.example.com/u/@octocat'),
+    'a link is left whole',
+  ).toBe('https://forum.example.com/u/@octocat');
+  expect(defuseMentions('a &lt; b &amp; c')).toBe('a &lt; b &amp; c');
+});

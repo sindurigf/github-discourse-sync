@@ -49,9 +49,19 @@ const FORUM_MAX_TITLE_CHARS = 255;
 const TITLE_ELLIPSIS = '…';
 const HTTP_TOO_MANY = 429;
 
+/* Entities GitHub and Discourse decode into @, #, : or /: numeric ones and their names. */
+const DANGEROUS_ENTITY = /&(?=#|(?:commat|num|colon|sol|period);)/gi;
+const neutralizeEntities = (text) => text.replace(DANGEROUS_ENTITY, '&amp;');
+
+/* A link is skipped whole; otherwise an @ that starts a name. One pass, so linear. */
+const LINK_OR_MENTION =
+  /\b(?:https?:\/\/|www\.)\S+|(^|[^\p{L}\p{N}`])@(?=[\p{L}\p{N}_-])/gu;
+
 /** Breaks `@name` so the other side does not notify a user of that name. */
 export const defuseMentions = (text) =>
-  text.replace(/(^|[^\p{L}\p{N}`/])@(?=[\p{L}\p{N}_-])/gu, '$1@\u200b');
+  neutralizeEntities(text).replace(LINK_OR_MENTION, (match, before) =>
+    before === undefined ? match : `${before}@\u200b`,
+  );
 
 /** Points GitHub links at redirect.github.com and breaks owner/repo#N, so a copy makes no backlink (README.md#limits-and-privacy). */
 export const defuseReferences = (text) =>
