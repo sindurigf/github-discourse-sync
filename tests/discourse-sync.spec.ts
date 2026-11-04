@@ -37,6 +37,8 @@ import {
   GITHUB_MAX_COMMENT_CHARS,
   GITHUB_TRUNCATED_NOTE,
   markerOf,
+  RUN_DEADLINE_MS,
+  SETUP_MARGIN_MS,
 } from '../scripts/discourse-sync.mjs';
 
 /* Function: the issue and forum mirror never loops, never posts twice and never pings anyone. */
@@ -1666,5 +1668,60 @@ test('a re-run for an issue links the topic an earlier run opened instead of pos
     ]);
   } finally {
     fake.server.close();
+  }
+});
+
+test('each mode stops at its run deadline, before its job times out', () => {
+  const modes = new Set<string>();
+  for (const { name, workflow } of workflows()) {
+    for (const job of Object.values(workflow.jobs ?? {}) as {
+      'timeout-minutes'?: number;
+      steps?: Step[];
+    }[]) {
+      const mode = (job.steps ?? [])
+        .map(
+          (step) =>
+            /node scripts\/discourse-sync\.mjs (\S+)/.exec(step.run ?? '')?.[1],
+        )
+        .find(Boolean);
+      if (!mode) continue;
+      modes.add(mode);
+      const deadline = (RUN_DEADLINE_MS as Record<string, number>)[mode];
+      expect(
+        deadline,
+        `${name} runs ${mode}, which has no deadline`,
+      ).toBeGreaterThan(0);
+      expect(
+        deadline + SETUP_MARGIN_MS,
+        `${name} can time out before ${mode} reaches its deadline`,
+      ).toBeLessThanOrEqual((job['timeout-minutes'] ?? 0) * 60_000);
+    }
+  }
+  expect([...modes].sort()).toEqual([
+    'open-topic',
+    'state',
+    'to-forum',
+    'to-github',
+  ]);
+});
+
+test('a forum that never answers fails the run at its deadline with a clear error', async () => {
+  const server = createServer(() => {});
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  try {
+    const started = performance.now();
+    const run = await runMode(
+      'to-forum',
+      origin,
+      { comment: human, issue: { number: 3 } },
+      { SYNC_DEADLINE_MS: '1500' },
+    );
+    expect(run.code).not.toBe(0);
+    expect(run.stderr).toMatch(/passed its 1\.5 s run deadline/);
+    expect(performance.now() - started).toBeLessThan(10_000);
+  } finally {
+    server.closeAllConnections();
+    server.close();
   }
 });
