@@ -1630,3 +1630,15 @@ test('a GitHub rate limit stops the to-github run instead of calling GitHub agai
     fake.server.close();
   }
 });
+
+test('a request GitHub or Discourse never received, such as a bad header, is not retried', async () => {
+  const started = performance.now();
+  await expect(
+    request('http://127.0.0.1:9/t/1.json', {
+      headers: { 'Api-Key': 'bad\nkey' },
+    }),
+  ).rejects.toThrow(/header/i);
+  expect(performance.now() - started, 'a bad header was retried').toBeLessThan(
+    1_000,
+  );
+});

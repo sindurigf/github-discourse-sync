@@ -338,7 +338,10 @@ export const request = async (url, init, scopeHint) => {
         redirect: 'manual',
       });
     } catch (error) {
-      if (method !== 'GET' || !canRetry) throw error;
+      /* A timeout or a network failure (fetch puts it in cause); a bad header or URL would fail again. */
+      const network =
+        error.name === 'TimeoutError' || error.cause !== undefined;
+      if (method !== 'GET' || !canRetry || !network) throw error;
       await sleep(backoffMs(attempt));
       continue;
     }
