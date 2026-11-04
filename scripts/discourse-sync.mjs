@@ -388,7 +388,7 @@ export const request = async (url, init, scopeHint) => {
       new Error(
         `${method} ${current} answered ${response.status}.${hint} ${text.slice(0, ERROR_BODY_CHARS)}`,
       ),
-      { status: response.status },
+      { status: response.status, url: current },
     );
   }
 };
@@ -454,7 +454,7 @@ const github = () => {
       headers: { ...headers, 'Content-Type': 'application/json' },
       body: JSON.stringify({ body }),
     });
-  return { comments, issue, comment };
+  return { api, comments, issue, comment };
 };
 
 const toForum = async () => {
@@ -524,16 +524,25 @@ const topicPosts = async (get, topicId) => {
   return { topic, posts };
 };
 
+/* Past the deadline, or GitHub rate-limits (403 or 429): every later topic would fail too. A forum error skips one topic. */
+const stopsTheRun = (error, githubApi) =>
+  error.deadline === true ||
+  ([HTTP_FORBIDDEN, HTTP_TOO_MANY].includes(error.status) &&
+    error.url?.startsWith(`${githubApi}/repos/`));
+
 const toGithub = async () => {
   const categoryId = parseCategoryId(required('DISCOURSE_CATEGORY_ID'));
   const apiUsername = required('DISCOURSE_API_USERNAME');
   const { base, get } = forum();
   const gh = github();
   const cutoff = Date.now() - LOOKBACK_HOURS * MS_PER_HOUR;
-  let copied = 0;
-  for (const listed of await recentTopics(get, categoryId, cutoff)) {
-    const target = topicTarget(listed.title);
-    if (!target || listed.category_id !== categoryId) continue;
+  /* Forum first: a topic with no reply from a person costs no GitHub request (1,000 an hour per repository). */
+  const syncTopic = async (listed, target) => {
+    const { topic, posts } = await topicPosts(get, listed.id);
+    const candidates = posts
+      .filter((post) => shouldMirrorPost(post, apiUsername, new Set()))
+      .sort((a, b) => a.post_number - b.post_number);
+    if (!candidates.length) return 0;
     const { number } = target;
     /* GitHub answers 410 for a deleted issue and 404 for one it hides; neither has anything to sync to. */
     const issue = await gh.issue(number).catch((error) => {
@@ -541,21 +550,47 @@ const toGithub = async () => {
         return null;
       throw error;
     });
-    if (!issue || Boolean(issue.pull_request) !== target.pullRequest) continue;
+    if (!issue || Boolean(issue.pull_request) !== target.pullRequest) return 0;
     const comments = await gh.comments(number);
-    if (topicIdFromComments(comments) !== listed.id) continue;
+    if (topicIdFromComments(comments) !== listed.id) return 0;
     const done = mirroredPostIds(comments);
-    const { topic, posts } = await topicPosts(get, listed.id);
-    for (const post of posts.sort((a, b) => a.post_number - b.post_number)) {
-      if (!shouldMirrorPost(post, apiUsername, done)) continue;
+    let copied = 0;
+    for (const post of candidates.filter(({ id }) => !done.has(id))) {
       const url = `${base}/t/${topic.slug}/${topic.id}/${post.post_number}`;
       await gh.comment(number, githubCommentBody(post, url));
       copied += 1;
+    }
+    return copied;
+  };
+  let copied = 0;
+  let failed = 0;
+  const listed = await recentTopics(get, categoryId, cutoff);
+  for (const [index, topic] of listed.entries()) {
+    const target = topicTarget(topic.title);
+    if (!target || topic.category_id !== categoryId) continue;
+    try {
+      copied += await syncTopic(topic, target);
+    } catch (error) {
+      failed += 1;
+      console.error(
+        `::error::Could not sync topic ${topic.id}: ${describe(error)}`,
+      );
+      if (stopsTheRun(error, gh.api)) {
+        const left = listed.length - index - 1;
+        console.error(
+          `::error::Stopped before ${left} more ${left === 1 ? 'topic' : 'topics'}; the next run tries again.`,
+        );
+        break;
+      }
     }
   }
   console.log(
     `Copied ${copied} forum ${copied === 1 ? 'reply' : 'replies'} to GitHub.`,
   );
+  if (failed)
+    throw new Error(
+      `${failed} ${failed === 1 ? 'topic' : 'topics'} could not sync.`,
+    );
 };
 
 const openTopic = async () => {
