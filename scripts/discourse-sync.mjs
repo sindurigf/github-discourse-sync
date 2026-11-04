@@ -53,7 +53,10 @@ export const defuseMentions = (text) =>
 export const markerOf = (postId) => `<!-- discourse-post:${postId} -->`;
 
 /** Copied text loses any marker it carries, so it cannot claim a post as mirrored. */
-const stripMarkers = (text) => text.replace(MARKER, '');
+const stripMarkers = (text) => {
+  const stripped = text.replace(MARKER, '');
+  return stripped === text ? text : stripMarkers(stripped);
+};
 
 /** Forum post ids already mirrored, read from the bot's comments only. */
 export const mirroredPostIds = (comments) =>

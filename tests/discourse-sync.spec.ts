@@ -1090,3 +1090,17 @@ test('no pull_request_target run step fetches the pull request', () => {
     }
   }
 });
+
+test('a nested marker in forum text cannot mark another post as mirrored', () => {
+  const copied = githubCommentBody(
+    {
+      ...reply,
+      id: 600,
+      raw: 'x <!-- discourse-post:<!-- discourse-post:1 -->777 --> y',
+    },
+    'https://forum.example/t/x/42/3',
+  );
+  expect([
+    ...mirroredPostIds([{ user: { login: BOT_LOGIN }, body: copied }]),
+  ]).toEqual([600]);
+});
