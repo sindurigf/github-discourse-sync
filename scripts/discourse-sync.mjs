@@ -374,7 +374,7 @@ export const request = async (url, init, scopeHint) => {
       new Error(
         `${method} ${current} answered ${response.status}.${hint} ${text.slice(0, ERROR_BODY_CHARS)}`,
       ),
-      { status: response.status },
+      { status: response.status, url: current },
     );
   }
 };
@@ -440,7 +440,7 @@ const github = () => {
       headers: { ...headers, 'Content-Type': 'application/json' },
       body: JSON.stringify({ body }),
     });
-  return { comments, issue, comment };
+  return { api, comments, issue, comment };
 };
 
 const toForum = async () => {
@@ -507,6 +507,14 @@ const topicPosts = async (get, topicId) => {
   return { topic, posts };
 };
 
+/* Every later topic would wait out the same retries, or keep calling a rate-limited GitHub (403 or 429). */
+const repeatsForEveryTopic = (error, githubApi) =>
+  error.status === undefined ||
+  error.status >= HTTP_SERVER_ERROR ||
+  error.status === HTTP_TOO_MANY ||
+  (error.status === HTTP_FORBIDDEN &&
+    error.url?.startsWith(`${githubApi}/repos/`));
+
 const toGithub = async () => {
   const categoryId = parseCategoryId(required('DISCOURSE_CATEGORY_ID'));
   const apiUsername = required('DISCOURSE_API_USERNAME');
@@ -552,8 +560,7 @@ const toGithub = async () => {
       console.error(
         `::error::Could not sync topic ${topic.id}: ${describe(error)}`,
       );
-      /* A 5xx or network error that outlasted the retries would cost every later topic the same wait. */
-      if (error.status === undefined || error.status >= HTTP_SERVER_ERROR) {
+      if (repeatsForEveryTopic(error, gh.api)) {
         const left = listed.length - index - 1;
         console.error(
           `::error::Stopped before ${left} more ${left === 1 ? 'topic' : 'topics'}; the next run tries again.`,

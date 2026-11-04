@@ -1587,3 +1587,46 @@ test('a failing topic reports the cause of a network error', async () => {
     fake.server.close();
   }
 });
+
+test('a GitHub rate limit stops the to-github run instead of calling GitHub again', async () => {
+  const fake = await fakeApi((method, url) => {
+    if (url.startsWith('/c/5/l/latest.json'))
+      return {
+        status: 200,
+        body: {
+          topic_list: { topics: [recentTopic(91, 3), recentTopic(92, 4)] },
+        },
+      };
+    const topic = /^\/t\/(9[12])(?:\.json|\/posts\.json)/.exec(url)?.[1];
+    if (topic && url.endsWith('.json'))
+      return {
+        status: 200,
+        body: {
+          id: Number(topic),
+          slug: 'crash',
+          post_stream: { stream: [1, 501] },
+        },
+      };
+    if (topic)
+      return {
+        status: 200,
+        body: { post_stream: { posts: [firstPost, reply] } },
+      };
+    if (url === '/repos/o/r/issues/3')
+      return {
+        status: 403,
+        body: { message: 'You have exceeded a secondary rate limit.' },
+      };
+    return { status: 500, body: { unexpected: `${method} ${url}` } };
+  });
+  try {
+    const run = await runMode('to-github', fake.origin);
+    expect(run.code).not.toBe(0);
+    expect(run.stderr).toMatch(/Stopped before 1 more topic/);
+    expect(fake.hits.some(({ url }) => url === '/repos/o/r/issues/4')).toBe(
+      false,
+    );
+  } finally {
+    fake.server.close();
+  }
+});
