@@ -425,7 +425,7 @@ test('a pull request link comment from a person binds no topic', () => {
 });
 
 for (const kind of ['issue', 'pull request'] as const) {
-  test(`a ${kind} body longer than a forum post is shortened with the note`, () => {
+  test(`${kind === 'issue' ? 'an issue' : 'a pull request'} body longer than a forum post is shortened with the note`, () => {
     for (const body of ['x'.repeat(70_000), '😀'.repeat(70_000)]) {
       const { raw } = newTopic(
         {
@@ -1537,19 +1537,23 @@ test('a failing topic reports the cause of a network error', async () => {
 });
 
 for (const [name, headers, stops] of [
-  ['a secondary rate limit (retry-after) stops', { 'retry-after': '60' }, true],
   [
-    'a primary rate limit (no requests left) stops',
+    '403 for a secondary rate limit (Retry-After) stops the run',
+    { 'retry-after': '60' },
+    true,
+  ],
+  [
+    '403 for a primary rate limit (no requests left) stops the run',
     { 'x-ratelimit-remaining': '0' },
     true,
   ],
   [
-    'a 403 that is not a rate limit skips one topic',
+    '403 that is not a rate limit skips one topic',
     { 'x-ratelimit-remaining': '4999' },
     false,
   ],
 ] as [string, Record<string, string>, boolean][])
-  test(`in to-github, a GitHub ${name}`, async () => {
+  test(`in to-github, GitHub's ${name}`, async () => {
     const fake = await fakeApi((method, url) => {
       if (url.startsWith('/c/5/l/latest.json'))
         return {
@@ -2002,6 +2006,17 @@ test('a POST is not retried sooner than its Retry-After', async () => {
   }
 });
 
+test('a 403 on the latest list names the topics read_lists scope', async () => {
+  const fake = await fakeApi(() => ({ status: 403, body: { errors: ['no'] } }));
+  try {
+    const run = await runMode('to-github', fake.origin);
+    expect(run.code).not.toBe(0);
+    expect(run.stderr).toContain('needs the "topics: read_lists" scope');
+  } finally {
+    fake.server.close();
+  }
+});
+
 test('in to-github, a GitHub rate limit after a redirect still stops the run', async () => {
   const fake = await fakeApi((method, url) => {
     if (url.startsWith('/c/5/l/latest.json'))
@@ -2046,17 +2061,6 @@ test('in to-github, a GitHub rate limit after a redirect still stops the run', a
     const run = await runMode('to-github', fake.origin);
     expect(run.code).not.toBe(0);
     expect(run.stderr).toMatch(/Stopped before 1 more topic/);
-  } finally {
-    fake.server.close();
-  }
-});
-
-test('a 403 on the latest list names the topics read_lists scope', async () => {
-  const fake = await fakeApi(() => ({ status: 403, body: { errors: ['no'] } }));
-  try {
-    const run = await runMode('to-github', fake.origin);
-    expect(run.code).not.toBe(0);
-    expect(run.stderr).toContain('needs the "topics: read_lists" scope');
   } finally {
     fake.server.close();
   }
