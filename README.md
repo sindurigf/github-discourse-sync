@@ -69,6 +69,8 @@ job is skipped. A fork or copy stays quiet until you set it up.
    moderator of the category. Without these rights, the close or reopen fails
    with an error that names them. A close still posts its reply first, but a
    reopen posts nothing.
+   Staff is the best choice: most Discourse rate limits, such as the wait
+   between new topics, do not apply to staff.
 3. Turn on Solved for the category so a reply can be marked as the solution.
    Any of these works: the Support category type, the site setting
    `allow_solved_on_all_topics` or, in older versions, the category setting
@@ -116,7 +118,13 @@ gh secret set DISCOURSE_API_USERNAME
   public repository. That means anyone can open a topic or post to the forum.
 - Forum replies in the synced category become public on GitHub, even when the
   forum needs a login.
-- Copied text breaks `@mentions` on both sides, so nobody gets notified.
+- Copied text gets a zero-width space after each `@` that starts a name, so
+  nobody gets notified. The space also lands inside code, so a copied command
+  with an `@` needs retyping.
+- In forum replies copied to GitHub, `github.com` links point to
+  `redirect.github.com` and `owner/repo#N` gets a zero-width space, so a copy
+  adds no backlink to another repository. A plain `#N` still links to an issue
+  in this repository.
 - Edits and deletions are not copied.
 - Review comments on code lines and review summaries are not copied.
 - Comments made before a pull request has its topic, such as while it is a
