@@ -9,30 +9,33 @@ import type { AddressInfo } from 'node:net';
 import { expect, test } from '@playwright/test';
 import {
   BOT_LOGIN,
+  FORUM_MAX_POST_CHARS,
+  GITHUB_MAX_COMMENT_CHARS,
+  GITHUB_TRUNCATED_NOTE,
   LINK_COMMENT_PREFIX,
-  defuseMentions,
+  PR_LINK_COMMENT_PREFIX,
+  STATUS_SCOPE,
+  TRUNCATED_NOTE,
+  acceptDecision,
+  defuseText,
+  earlierReplyId,
   forumReplyBody,
   githubCommentBody,
-  PR_LINK_COMMENT_PREFIX,
-  pullRequestTopic,
-  shouldOpenTopic,
-  acceptDecision,
-  earlierReplyId,
-  stateSteps,
-  topicStateChange,
-  repoKey,
-  topicExternalId,
-  topicTarget,
+  markerOf,
   mirroredPostIds,
+  parseCategoryId,
+  pullRequestTopic,
+  repoKey,
   request,
   shouldMirrorComment,
   shouldMirrorPost,
+  shouldOpenTopic,
   splitByActivity,
-  STATUS_SCOPE,
+  stateSteps,
+  topicExternalId,
   topicIdFromComments,
-  FORUM_MAX_POST_CHARS,
-  TRUNCATED_NOTE,
-  parseCategoryId,
+  topicStateChange,
+  topicTarget,
 } from '../scripts/discourse-sync.mjs';
 
 /* Function: the issue and forum mirror never loops, never posts twice and never pings anyone. */
@@ -54,17 +57,6 @@ const linkComment = {
   user: { login: BOT_LOGIN, type: 'Bot' },
   body: `${LINK_COMMENT_PREFIX}https://forum.example/t/github-issue-3-crash/42`,
 };
-
-test('the link comment text in issue-to-discourse.yml matches the script', () => {
-  const workflow = readFileSync(
-    '.github/workflows/issue-to-discourse.yml',
-    'utf8',
-  );
-  expect(
-    workflow,
-    'issue-to-discourse.yml no longer posts the text discourse-sync.mjs looks for',
-  ).toContain(LINK_COMMENT_PREFIX);
-});
 
 test('the topic id comes only from the bot link comment', () => {
   expect(topicIdFromComments([human, linkComment])).toBe(42);
@@ -144,9 +136,6 @@ test('mirrored text names the author without an @ and defuses mentions', () => {
   );
   expect(toGithub.startsWith('robin wrote on the forum:')).toBe(true);
   expect(toGithub).not.toMatch(/(^|[^\w`/])@[\w-]/);
-  expect(defuseMentions('mail me at a@b.example')).toBe(
-    'mail me at a@b.example',
-  );
 });
 
 test('only the bot can mark a forum post as mirrored', () => {
@@ -422,19 +411,6 @@ test('a pull request link comment from a person binds no topic', () => {
       },
     ]),
   ).toBeNull();
-});
-
-test('a pull request body longer than a forum post is shortened', () => {
-  const { raw } = pullRequestTopic({
-    number: 12,
-    title: 't',
-    body: 'x'.repeat(70_000),
-    html_url: 'https://github.com/o/r/pull/12',
-    user: { login: 'robin' },
-  });
-  expect(Array.from(raw).length).toBeLessThanOrEqual(32_000);
-  expect(raw).toContain('https://github.com/o/r/pull/12');
-  expect(raw.endsWith(TRUNCATED_NOTE)).toBe(true);
 });
 
 /* Security: pull_request_target runs with secrets, so it must never check out the pull request. */
@@ -811,33 +787,6 @@ test('repositories that share a forum get different external_ids that Discourse 
   expect(repoKey('o/r')).toMatch(/^[0-9a-f]{12}$/);
 });
 
-test('issue-to-discourse.yml builds the external_id the script would give an issue', async () => {
-  const run =
-    steps(
-      workflows().find(({ name }) => name === 'issue-to-discourse.yml')!
-        .workflow,
-    ).find((step) => step.run?.includes('external_id='))?.run ?? '';
-  const idScript = run.match(/^ *repo_key=.*\n *external_id=.*$/m)?.[0];
-  expect(
-    idScript,
-    'the repo_key and external_id lines are missing',
-  ).toBeDefined();
-  for (const repository of ['o/r', 'example-owner/a.b_c-d']) {
-    const { stdout } = await promisify(execFile)(
-      'bash',
-      ['-euo', 'pipefail', '-c', `${idScript}\nprintf '%s' "$external_id"`],
-      {
-        env: {
-          PATH: process.env['PATH'],
-          GITHUB_REPOSITORY: repository,
-          ISSUE_NUMBER: '3',
-        },
-      },
-    );
-    expect(stdout).toBe(topicExternalId(repository, 3, false));
-  }
-});
-
 test('a state reply posted by an earlier API user stays on the forum', () => {
   const none = new Set<number>();
   const replies = [
@@ -977,6 +926,353 @@ const workflows = (): { name: string; workflow: Workflow }[] =>
 const steps = (workflow: Workflow): Step[] =>
   Object.values(workflow.jobs ?? {}).flatMap((job) => job.steps ?? []);
 
+test('a category id that is not a positive whole number is refused', () => {
+  expect(parseCategoryId('5')).toBe(5);
+  for (const value of ['github', '0', '-1', '5.5', '', undefined]) {
+    expect(
+      () => parseCategoryId(value),
+      `${String(value)} was accepted`,
+    ).toThrow(/DISCOURSE_CATEGORY_ID/);
+  }
+});
+
+/* Security: a run step reads untrusted text from env, never from an expression. */
+test('no run step interpolates a ${{ }} expression', () => {
+  for (const { name, workflow } of workflows()) {
+    for (const step of steps(workflow)) {
+      expect(
+        step.run ?? '',
+        `${name} step "${step.name}" puts an expression in its script`,
+      ).not.toContain('${{');
+    }
+  }
+});
+
+/* Security: a tag can be moved to other code; a commit SHA cannot. */
+test('every action is pinned to a full commit SHA', () => {
+  for (const { name, workflow } of workflows()) {
+    for (const step of steps(workflow)) {
+      if (!step.uses) continue;
+      expect(step.uses, `${name} uses an action by tag or branch`).toMatch(
+        /^[\w.-]+\/[\w.-]+(?:\/[\w./-]+)?@[0-9a-f]{40}$/,
+      );
+    }
+  }
+});
+
+/* Security: a pull_request_target job has the secrets, so no step may fetch the pull request's code. */
+test('no pull_request_target run step fetches the pull request', () => {
+  const fetchesPullRequest =
+    /gh pr checkout|refs\/pull\/|pull\/[^/\s]+\/(?:head|merge)|head\.(?:ref|sha)/;
+  for (const { name, workflow } of workflows()) {
+    if (!JSON.stringify(workflow.on ?? {}).includes('pull_request_target'))
+      continue;
+    for (const step of steps(workflow)) {
+      expect(
+        step.run ?? '',
+        `${name} step "${step.name}" fetches the pull request`,
+      ).not.toMatch(fetchesPullRequest);
+    }
+  }
+});
+
+type Route = (
+  method: string,
+  url: string,
+  body: string,
+) =>
+  { status: number; body?: unknown; headers?: Record<string, string> } | 'drop';
+
+const fakeApi = (
+  route: Route,
+): Promise<{ server: Server; origin: string; hits: Hit[] }> =>
+  new Promise((resolve) => {
+    const hits: Hit[] = [];
+    const server = createServer((req, res) => {
+      let body = '';
+      req.on('data', (chunk) => (body += chunk));
+      req.on('end', () => {
+        const method = req.method ?? '';
+        const url = req.url ?? '';
+        hits.push({ method, url, body });
+        const answer = route(method, url, body);
+        if (answer === 'drop') return req.socket.destroy();
+        res.writeHead(answer.status, {
+          'content-type': 'application/json',
+          ...answer.headers,
+        });
+        res.end(JSON.stringify(answer.body ?? {}));
+      });
+    });
+    server.listen(0, '127.0.0.1', () =>
+      resolve({
+        server,
+        origin: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
+        hits,
+      }),
+    );
+  });
+
+const runMode = async (
+  mode: string,
+  origin: string,
+  event?: unknown,
+  env: Record<string, string> = {},
+): Promise<{ code: number; stdout: string; stderr: string }> => {
+  const eventPath = join(mkdtempSync(join(tmpdir(), 'discourse-')), 'e.json');
+  writeFileSync(eventPath, JSON.stringify(event ?? {}));
+  try {
+    const { stdout, stderr } = await promisify(execFile)(
+      process.execPath,
+      ['scripts/discourse-sync.mjs', mode],
+      {
+        env: {
+          PATH: process.env.PATH,
+          GITHUB_EVENT_PATH: eventPath,
+          GITHUB_API_URL: origin,
+          GITHUB_REPOSITORY: 'o/r',
+          GITHUB_TOKEN: 'gh-token',
+          DISCOURSE_URL: origin,
+          DISCOURSE_CATEGORY_ID: '5',
+          DISCOURSE_API_KEY: 'key',
+          DISCOURSE_API_USERNAME: API_USER,
+          ...env,
+        },
+      },
+    );
+    return { code: 0, stdout, stderr };
+  } catch (error) {
+    const failed = error as { code: number; stdout: string; stderr: string };
+    return { code: failed.code, stdout: failed.stdout, stderr: failed.stderr };
+  }
+};
+
+const recentTopic = (id: number, issue: number) => ({
+  id,
+  title: `GitHub issue #${issue}: Crash`,
+  category_id: 5,
+  bumped_at: new Date().toISOString(),
+});
+const topicLink = (topicId: number) => ({
+  user: { login: BOT_LOGIN, type: 'Bot' },
+  body: `${LINK_COMMENT_PREFIX}https://forum.example/t/crash/${topicId}`,
+});
+const firstPost = {
+  id: 1,
+  post_number: 1,
+  post_type: 1,
+  username: API_USER,
+  raw: 'Opened',
+};
+
+test('a nested marker in forum text cannot mark another post as mirrored', () => {
+  const copied = githubCommentBody(
+    {
+      ...reply,
+      id: 600,
+      raw: 'x <!-- discourse-post:<!-- discourse-post:1 -->777 --> y',
+    },
+    'https://forum.example/t/x/42/3',
+  );
+  expect([
+    ...mirroredPostIds([{ user: { login: BOT_LOGIN }, body: copied }]),
+  ]).toEqual([600]);
+});
+
+test('a forum reply longer than a GitHub comment is shortened, keeping its link and marker', () => {
+  const url = 'https://forum.example/t/x/42/2';
+  for (const raw of ['x'.repeat(70_000), '😀'.repeat(70_000)]) {
+    const body = githubCommentBody({ ...reply, raw }, url);
+    expect(Array.from(body).length).toBeLessThanOrEqual(
+      GITHUB_MAX_COMMENT_CHARS,
+    );
+    expect(body).toContain(GITHUB_TRUNCATED_NOTE);
+    expect(body).toContain(url);
+    expect(body.endsWith(markerOf(reply.id))).toBe(true);
+    expect(body, 'a cut must not split a surrogate pair').not.toMatch(
+      /[\uD800-\uDBFF](?![\uDC00-\uDFFF])/,
+    );
+  }
+});
+
+const openedIssue = {
+  issue: {
+    number: 3,
+    title: 'Crash',
+    body: 'Ping @nami about it.',
+    html_url: 'https://github.com/o/r/issues/3',
+    user: { login: 'robin', type: 'User' },
+  },
+};
+
+const ZWSP = '​';
+/* A quadratic pass grows about 16 times from n to 4n; a linear one about 4 times. */
+const growth = (run: (n: number) => void, n: number) => {
+  const time = (size: number) => {
+    const started = performance.now();
+    run(size);
+    return performance.now() - started;
+  };
+  time(n);
+  return time(4 * n) / Math.max(time(n), 1);
+};
+
+for (const [name, input, expected] of [
+  ['a mention', '@octocat look', `@${ZWSP}octocat look`],
+  [
+    'a mention after a letter',
+    'é@octocat 中@octocat',
+    `é@${ZWSP}octocat 中@${ZWSP}octocat`,
+  ],
+  [
+    'a mention after a link',
+    '[x](https://forum.example.com)@octocat',
+    `[x](https://forum.example.com)@${ZWSP}octocat`,
+  ],
+  [
+    'a mention after <',
+    'https://forum.example.com<@octocat',
+    `https://forum.example.com<@${ZWSP}octocat`,
+  ],
+  [
+    'a mention after a broken link',
+    'see http://)@octocat',
+    `see http://)@${ZWSP}octocat`,
+  ],
+  ['an email address', 'a@b.example', `a@${ZWSP}b.example`],
+  [
+    'a reference after a link',
+    '[x](https://forum.example.com)octocat/Hello-World#1',
+    `[x](https://forum.example.com)octocat/Hello-World#${ZWSP}1`,
+  ],
+  [
+    'a GitHub link after a link',
+    '[t](https://forum.example.com)https://github.com/octocat/Hello-World/issues/1',
+    '[t](https://forum.example.com)https://redirect.github.com/octocat/Hello-World/issues/1',
+  ],
+  [
+    'a link fragment',
+    'https://forum.example.com/t/x/123#4',
+    `https://forum.example.com/t/x/123#${ZWSP}4`,
+  ],
+  [
+    'an entity for @',
+    '&#64;octocat &commat;octocat',
+    `&amp;#${ZWSP}64;octocat &amp;commat;octocat`,
+  ],
+  [
+    'an entity for # and :',
+    'cli/cli&#35;2 [x](https&#58;//github.com/a)',
+    `cli/cli&amp;#${ZWSP}35;2 [x](https&amp;#${ZWSP}58;//redirect.github.com/a)`,
+  ],
+  [
+    'a redirect link, kept',
+    'https://redirect.github.com/a',
+    'https://redirect.github.com/a',
+  ],
+  ['a marker', '<!-- discourse-post:5 -->', `<!-- discourse-post${ZWSP}:5 -->`],
+] as const)
+  test(`copied text defuses ${name}`, () => {
+    expect(defuseText(input)).toBe(expected);
+  });
+
+test('no adversarial input keeps a mention, reference, entity, GitHub link or marker', () => {
+  const corpus = [
+    '@a',
+    '_@a_',
+    '`@a',
+    'a/@a',
+    'é@a',
+    '(@a)',
+    '&#64;a',
+    '&#x40;a',
+    '&commat;a',
+    'o/r#1',
+    'o/r&#35;1',
+    'o/r&num;1',
+    '#1',
+    'GH-1 #1',
+    'https://github.com/o/r/issues/1',
+    'HTTPS://GITHUB.COM/o/r/pull/2',
+    'www.github.com/o/r/issues/3',
+    'github.com/o/r',
+    '[x](https&#58;//github.com/o/r/issues/4)',
+    '<!-- discourse-post:<!-- discourse-post:1 -->7 -->',
+    '&amp;#64;a',
+    '&&#64;a',
+  ];
+  for (const input of corpus) {
+    const out = defuseText(input);
+    expect(out, input).not.toMatch(/@(?!​)/);
+    expect(out, input).not.toMatch(/#\d/);
+    expect(out, input).not.toMatch(/&#|&(?!amp;)[A-Za-z]+;/);
+    expect(out, input).not.toMatch(/(?<!redirect\.)github\.com/i);
+    expect(out, input).not.toMatch(/discourse-post:/);
+  }
+});
+
+test('copied text is defused in linear time, nested markers included', () => {
+  const nested = (n: number) =>
+    '<!-- discourse-post:'.repeat(n) + '1 -->' + '7 -->'.repeat(n);
+  const mixed = (n: number) => 'a/@#1&#64;github.com '.repeat(n);
+  for (const make of [nested, mixed])
+    expect(
+      growth((n) => githubCommentBody({ ...reply, raw: make(n) }, 'u'), 2_000),
+      'defusing grows faster than linear',
+    ).toBeLessThan(8);
+});
+
+test('the link comment text in issue-to-discourse.yml matches the script', () => {
+  const workflow = readFileSync(
+    '.github/workflows/issue-to-discourse.yml',
+    'utf8',
+  );
+  expect(
+    workflow,
+    'issue-to-discourse.yml no longer posts the text discourse-sync.mjs looks for',
+  ).toContain(LINK_COMMENT_PREFIX);
+});
+
+test('a pull request body longer than a forum post is shortened', () => {
+  const { raw } = pullRequestTopic({
+    number: 12,
+    title: 't',
+    body: 'x'.repeat(70_000),
+    html_url: 'https://github.com/o/r/pull/12',
+    user: { login: 'robin' },
+  });
+  expect(Array.from(raw).length).toBeLessThanOrEqual(32_000);
+  expect(raw).toContain('https://github.com/o/r/pull/12');
+  expect(raw.endsWith(TRUNCATED_NOTE)).toBe(true);
+});
+
+test('issue-to-discourse.yml builds the external_id the script would give an issue', async () => {
+  const run =
+    steps(
+      workflows().find(({ name }) => name === 'issue-to-discourse.yml')!
+        .workflow,
+    ).find((step) => step.run?.includes('external_id='))?.run ?? '';
+  const idScript = run.match(/^ *repo_key=.*\n *external_id=.*$/m)?.[0];
+  expect(
+    idScript,
+    'the repo_key and external_id lines are missing',
+  ).toBeDefined();
+  for (const repository of ['o/r', 'example-owner/a.b_c-d']) {
+    const { stdout } = await promisify(execFile)(
+      'bash',
+      ['-euo', 'pipefail', '-c', `${idScript}\nprintf '%s' "$external_id"`],
+      {
+        env: {
+          PATH: process.env['PATH'],
+          GITHUB_REPOSITORY: repository,
+          ISSUE_NUMBER: '3',
+        },
+      },
+    );
+    expect(stdout).toBe(topicExternalId(repository, 3, false));
+  }
+});
+
 /* Function: the shell path for issues keeps the same category rule, post limit and mention rule as the script. */
 const issueTopicPayload = async (
   body: string,
@@ -1038,55 +1334,5 @@ test('issue-to-discourse.yml refuses a category id that is not a positive whole 
     ).rejects.toMatchObject({
       stdout: expect.stringContaining('::error::Set DISCOURSE_CATEGORY_ID'),
     });
-  }
-});
-
-test('a category id that is not a positive whole number is refused', () => {
-  expect(parseCategoryId('5')).toBe(5);
-  for (const value of ['github', '0', '-1', '5.5', '', undefined]) {
-    expect(
-      () => parseCategoryId(value),
-      `${String(value)} was accepted`,
-    ).toThrow(/DISCOURSE_CATEGORY_ID/);
-  }
-});
-
-/* Security: a run step reads untrusted text from env, never from an expression. */
-test('no run step interpolates a ${{ }} expression', () => {
-  for (const { name, workflow } of workflows()) {
-    for (const step of steps(workflow)) {
-      expect(
-        step.run ?? '',
-        `${name} step "${step.name}" puts an expression in its script`,
-      ).not.toContain('${{');
-    }
-  }
-});
-
-/* Security: a tag can be moved to other code; a commit SHA cannot. */
-test('every action is pinned to a full commit SHA', () => {
-  for (const { name, workflow } of workflows()) {
-    for (const step of steps(workflow)) {
-      if (!step.uses) continue;
-      expect(step.uses, `${name} uses an action by tag or branch`).toMatch(
-        /^[\w.-]+\/[\w.-]+(?:\/[\w./-]+)?@[0-9a-f]{40}$/,
-      );
-    }
-  }
-});
-
-/* Security: a pull_request_target job has the secrets, so no step may fetch the pull request's code. */
-test('no pull_request_target run step fetches the pull request', () => {
-  const fetchesPullRequest =
-    /gh pr checkout|refs\/pull\/|pull\/[^/\s]+\/(?:head|merge)|head\.(?:ref|sha)/;
-  for (const { name, workflow } of workflows()) {
-    if (!JSON.stringify(workflow.on ?? {}).includes('pull_request_target'))
-      continue;
-    for (const step of steps(workflow)) {
-      expect(
-        step.run ?? '',
-        `${name} step "${step.name}" fetches the pull request`,
-      ).not.toMatch(fetchesPullRequest);
-    }
   }
 });
