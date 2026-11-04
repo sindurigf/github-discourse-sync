@@ -2050,3 +2050,14 @@ test('in to-github, a GitHub rate limit after a redirect still stops the run', a
     fake.server.close();
   }
 });
+
+test('a 403 on the latest list names the topics read_lists scope', async () => {
+  const fake = await fakeApi(() => ({ status: 403, body: { errors: ['no'] } }));
+  try {
+    const run = await runMode('to-github', fake.origin);
+    expect(run.code).not.toBe(0);
+    expect(run.stderr).toContain('needs the "topics: read_lists" scope');
+  } finally {
+    fake.server.close();
+  }
+});
