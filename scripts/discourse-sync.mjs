@@ -6,6 +6,7 @@
 
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 
 /* Must match the comment issue-to-discourse.yml posts. */
@@ -28,11 +29,21 @@ const MS_PER_HOUR = 3_600_000;
 const POSTS_PER_REQUEST = 100;
 const GITHUB_PAGE_SIZE = 100;
 const MAX_ATTEMPTS = 5;
-/* One request with four waits and five 30 s timeouts takes at most 4.5 minutes. */
-const MAX_RETRY_AFTER_S = 30;
+/* Per request: 5 attempts and 3 redirects of 20 s, plus 4 waits of up to 20 s, is 4 minutes at most. */
+const MAX_RETRY_AFTER_S = 20;
 const BACKOFF_BASE_MS = 2_000;
 const MS_PER_S = 1_000;
-const REQUEST_TIMEOUT_MS = 30_000;
+const REQUEST_TIMEOUT_MS = 20_000;
+const HTTP_SERVER_ERROR = 500;
+/* Checkout and setup-node run before the script inside each job's timeout-minutes. */
+export const SETUP_MARGIN_MS = 90_000;
+/* Below each job's timeout-minutes less SETUP_MARGIN_MS, so a hanging API fails the run with an error, not a cancel. */
+export const RUN_DEADLINE_MS = {
+  'open-topic': 210_000,
+  'to-forum': 210_000,
+  state: 210_000,
+  'to-github': 510_000,
+};
 const HTTP_FORBIDDEN = 403;
 const HTTP_NOT_FOUND = 404;
 const HTTP_GONE = 410;
@@ -263,7 +274,26 @@ export const parseCategoryId = (value) => {
   return Number(value);
 };
 
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+/** The message and, for a network error, its cause. */
+const describe = (error) =>
+  `${error.message}${error.cause ? ` (${error.cause.message ?? error.cause})` : ''}`;
+
+/* main sets the run deadline for its mode; requests made outside a run have none. */
+let runDeadline = { signal: new AbortController().signal, ms: 0 };
+
+const deadlineError = () =>
+  Object.assign(
+    new Error(
+      `The run passed its ${runDeadline.ms / MS_PER_S} s run deadline, set below the job's timeout-minutes. Run it again once the API answers.`,
+    ),
+    { deadline: true },
+  );
+
+/** Waits, unless the run deadline passes first. */
+const wait = (ms) =>
+  sleep(ms, undefined, { signal: runDeadline.signal }).catch(() => {
+    throw deadlineError();
+  });
 
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 const MAX_REDIRECTS = 3;
@@ -289,18 +319,43 @@ export const redirectTarget = (from, location, method, origin, hops) => {
 
 export const STATUS_SCOPE = 'topics: status';
 
-/* Retries 429 with Retry-After or exponential backoff; a 403 names the scope it needs, and for status the user rights. */
+const backoffMs = (attempt, retryAfterHeader) => {
+  const retryAfter = Number(retryAfterHeader);
+  return Number.isFinite(retryAfter) && retryAfter > 0
+    ? Math.min(retryAfter, MAX_RETRY_AFTER_S) * MS_PER_S
+    : BACKOFF_BASE_MS * 2 ** (attempt - 1);
+};
+
+/**
+ * Retries 429 for any method, and a 5xx, timeout or dropped connection for a GET only,
+ * since a repeated POST could post twice. A 403 names the scope it needs.
+ */
 export const request = async (url, init, scopeHint) => {
   const method = init?.method ?? 'GET';
   const origin = new URL(url).origin;
   let current = url;
   let hops = 0;
   for (let attempt = 1; ; attempt += 1) {
-    const response = await fetch(current, {
-      ...init,
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-      redirect: 'manual',
-    });
+    const canRetry = attempt < MAX_ATTEMPTS;
+    let response;
+    try {
+      response = await fetch(current, {
+        ...init,
+        signal: AbortSignal.any([
+          AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+          runDeadline.signal,
+        ]),
+        redirect: 'manual',
+      });
+    } catch (error) {
+      if (runDeadline.signal.aborted) throw deadlineError();
+      /* A timeout or a network failure (fetch puts it in cause); a bad header or URL would fail again. */
+      const network =
+        error.name === 'TimeoutError' || error.cause !== undefined;
+      if (method !== 'GET' || !canRetry || !network) throw error;
+      await wait(backoffMs(attempt));
+      continue;
+    }
     if (REDIRECT_STATUSES.has(response.status)) {
       current = redirectTarget(
         current,
@@ -313,13 +368,12 @@ export const request = async (url, init, scopeHint) => {
       attempt -= 1;
       continue;
     }
-    if (response.status === HTTP_TOO_MANY && attempt < MAX_ATTEMPTS) {
-      const retryAfter = Number(response.headers.get('retry-after'));
-      await sleep(
-        Number.isFinite(retryAfter) && retryAfter > 0
-          ? Math.min(retryAfter, MAX_RETRY_AFTER_S) * MS_PER_S
-          : BACKOFF_BASE_MS * 2 ** (attempt - 1),
-      );
+    const transient =
+      response.status === HTTP_TOO_MANY ||
+      (method === 'GET' && response.status >= HTTP_SERVER_ERROR);
+    if (transient && canRetry) {
+      await response.body?.cancel();
+      await wait(backoffMs(attempt, response.headers.get('retry-after')));
       continue;
     }
     if (response.ok) return response;
@@ -634,8 +688,23 @@ const syncState = async () => {
   );
 };
 
+/* SYNC_DEADLINE_MS overrides the mode's deadline, for a shorter one in tests. */
+const deadlineMs = (mode) => {
+  const override = process.env.SYNC_DEADLINE_MS;
+  if (override === undefined) return RUN_DEADLINE_MS[mode];
+  if (!/^[1-9]\d*$/.test(override))
+    throw new Error(
+      `Set SYNC_DEADLINE_MS to a whole number of milliseconds, not "${override}".`,
+    );
+  return Number(override);
+};
+
 const main = async () => {
   const mode = process.argv[2];
+  if (Object.hasOwn(RUN_DEADLINE_MS, mode)) {
+    const ms = deadlineMs(mode);
+    runDeadline = { signal: AbortSignal.timeout(ms), ms };
+  }
   if (mode === 'state') return syncState();
   if (mode === 'open-topic') return openTopic();
   if (mode === 'to-forum') return toForum();
@@ -647,8 +716,7 @@ const main = async () => {
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   main().catch((error) => {
-    const cause = error.cause ? ` (${error.cause.message ?? error.cause})` : '';
-    console.error(`::error::${error.message}${cause}`);
+    console.error(`::error::${describe(error)}`);
     process.exit(1);
   });
 }
