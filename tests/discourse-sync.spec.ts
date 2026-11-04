@@ -1646,3 +1646,25 @@ test('a request GitHub or Discourse never received, such as a bad header, is not
 test('a mention after a lone backtick is defused', () => {
   expect(defuseMentions('`@nami')).toBe('`@​nami');
 });
+
+test('a re-run for an issue links the topic an earlier run opened instead of posting', async () => {
+  const fake = await fakeApi((method, url) => {
+    if (url.startsWith('/repos/o/r/issues/3/comments'))
+      return method === 'POST' ? { status: 201 } : { status: 200, body: [] };
+    if (url === `/t/external_id/${topicExternalId('o/r', 3, false)}.json`)
+      return { status: 301, headers: { location: '/t/crash/80.json' } };
+    if (url === '/t/crash/80.json')
+      return { status: 200, body: { id: 80, slug: 'crash' } };
+    return { status: 500, body: { unexpected: `${method} ${url}` } };
+  });
+  try {
+    const run = await runMode('open-topic', fake.origin, openedIssue);
+    expect(run.code, run.stderr).toBe(0);
+    expect(fake.hits.some(({ url }) => url === '/posts.json')).toBe(false);
+    expect(linkComments(fake.hits)).toEqual([
+      `${LINK_COMMENT_PREFIX}${fake.origin}/t/crash/80`,
+    ]);
+  } finally {
+    fake.server.close();
+  }
+});
