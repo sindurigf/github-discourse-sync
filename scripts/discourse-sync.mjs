@@ -42,6 +42,9 @@ const ERROR_BODY_CHARS = 500;
 /* issue-to-discourse.yml passes the same limit and note to jq. */
 export const FORUM_MAX_POST_CHARS = 32_000;
 export const TRUNCATED_NOTE = '\n\n(Shortened; the full text is on GitHub.)';
+export const GITHUB_MAX_COMMENT_CHARS = 65_536;
+export const GITHUB_TRUNCATED_NOTE =
+  '\n\n(Shortened; the full text is on the forum.)';
 /* Discourse's default max_topic_title_length. */
 const FORUM_MAX_TITLE_CHARS = 255;
 const TITLE_ELLIPSIS = '…';
@@ -49,7 +52,16 @@ const HTTP_TOO_MANY = 429;
 
 /** Breaks `@name` so the other side does not notify a user of that name. */
 export const defuseMentions = (text) =>
-  text.replace(/(^|[^\w`/])@(?=[\w-])/g, '$1@​');
+  text.replace(/(^|[^\p{L}\p{N}`/])@(?=[\p{L}\p{N}_-])/gu, '$1@\u200b');
+
+/** Points GitHub links at redirect.github.com and breaks owner/repo#N, so a copy makes no backlink (README.md#limits-and-privacy). */
+export const defuseReferences = (text) =>
+  text
+    .replace(
+      /\bhttps?:\/\/(?:www\.)?github\.com\//gi,
+      'https://redirect.github.com/',
+    )
+    .replace(/(?<![\w.-])([\w-]{1,39}\/[\w.-]{1,100})#(?=\d)/g, '$1#\u200b');
 
 export const markerOf = (postId) => `<!-- discourse-post:${postId} -->`;
 
@@ -236,8 +248,13 @@ export const forumReplyBody = (comment) => {
   return `${header}${fit(text, room, TRUNCATED_NOTE)}${footer}`;
 };
 
-export const githubCommentBody = (post, postUrl) =>
-  `${post.username} wrote on the forum:\n\n${defuseMentions(stripMarkers(post.raw ?? ''))}\n\n${postUrl}\n${markerOf(post.id)}`;
+export const githubCommentBody = (post, postUrl) => {
+  const header = `${post.username} wrote on the forum:\n\n`;
+  const footer = `\n\n${postUrl}\n${markerOf(post.id)}`;
+  const text = defuseReferences(defuseMentions(stripMarkers(post.raw ?? '')));
+  const room = GITHUB_MAX_COMMENT_CHARS - Array.from(header + footer).length;
+  return `${header}${fit(text, room, GITHUB_TRUNCATED_NOTE)}${footer}`;
+};
 
 const required = (name) => {
   const value = process.env[name];
