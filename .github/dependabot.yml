@@ -9,6 +9,10 @@ updates:
     groups:
       minor-and-patch:
         update-types: [minor, patch]
+    ignore:
+      # Node 24 types, matching .nvmrc.
+      - dependency-name: '@types/node'
+        versions: ['>=25']
 
   - package-ecosystem: github-actions
     directory: /
