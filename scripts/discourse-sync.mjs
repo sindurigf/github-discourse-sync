@@ -78,11 +78,9 @@ export const defuseReferences = (text) =>
 
 export const markerOf = (postId) => `<!-- discourse-post:${postId} -->`;
 
-/** Copied text loses any marker it carries, so it cannot claim a post as mirrored. */
-const stripMarkers = (text) => {
-  const stripped = text.replace(MARKER, '');
-  return stripped === text ? text : stripMarkers(stripped);
-};
+/** Copied text gets a zero-width space in every marker keyword, so no marker survives or reassembles. */
+const defuseMarkers = (text) =>
+  text.replaceAll('discourse-post:', 'discourse-post\u200b:');
 
 /** Forum post ids already mirrored, read from the bot's comments only. */
 export const mirroredPostIds = (comments) =>
@@ -186,7 +184,7 @@ const fit = (text, limit, note) => {
 /** The first post of the topic for an issue or a pull request. */
 export const newTopic = (item, pullRequest) => {
   const body = item.body
-    ? defuseMentions(stripMarkers(item.body))
+    ? defuseMentions(defuseMarkers(item.body))
     : '_No description provided._';
   const header = `Opened by ${item.user.login} on GitHub:\n\n${item.html_url}\n\n---\n\n`;
   return {
@@ -257,7 +255,7 @@ export const splitByActivity = (topics, cutoff) => {
 export const forumReplyBody = (comment) => {
   const header = `${comment.user.login} wrote on GitHub:\n\n`;
   const footer = `\n\n${comment.html_url}`;
-  const text = defuseMentions(stripMarkers(comment.body ?? ''));
+  const text = defuseMentions(defuseMarkers(comment.body ?? ''));
   const room = FORUM_MAX_POST_CHARS - header.length - footer.length;
   return `${header}${fit(text, room, TRUNCATED_NOTE)}${footer}`;
 };
@@ -265,7 +263,7 @@ export const forumReplyBody = (comment) => {
 export const githubCommentBody = (post, postUrl) => {
   const header = `${post.username} wrote on the forum:\n\n`;
   const footer = `\n\n${postUrl}\n${markerOf(post.id)}`;
-  const text = defuseReferences(defuseMentions(stripMarkers(post.raw ?? '')));
+  const text = defuseReferences(defuseMentions(defuseMarkers(post.raw ?? '')));
   const room = GITHUB_MAX_COMMENT_CHARS - Array.from(header + footer).length;
   return `${header}${fit(text, room, GITHUB_TRUNCATED_NOTE)}${footer}`;
 };

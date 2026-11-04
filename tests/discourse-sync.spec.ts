@@ -1466,3 +1466,20 @@ test('references written with HTML entities are defused and links keep their fra
     'https://redirect.github.com/cli/cli/issues/3',
   );
 });
+
+test('a deeply nested marker is defused in linear time', () => {
+  const nested =
+    '<!-- discourse-post:'.repeat(10_000) + '1 -->' + '7 -->'.repeat(10_000);
+  const started = performance.now();
+  const body = githubCommentBody(
+    { ...reply, id: 600, raw: nested },
+    'https://forum.example.com/t/x/42/3',
+  );
+  expect(
+    performance.now() - started,
+    'marker defusing is not linear',
+  ).toBeLessThan(1_000);
+  expect([...mirroredPostIds([{ user: { login: BOT_LOGIN }, body }])]).toEqual([
+    600,
+  ]);
+});
