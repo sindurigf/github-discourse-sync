@@ -933,6 +933,16 @@ test('a forum topic whose issue was deleted is skipped instead of failing the ru
           },
         },
       };
+    if (url === '/t/90.json')
+      return {
+        status: 200,
+        body: { id: 90, slug: 'deleted', post_stream: { stream: [1, 501] } },
+      };
+    if (url.startsWith('/t/90/posts.json'))
+      return {
+        status: 200,
+        body: { post_stream: { posts: [firstPost, reply] } },
+      };
     if (url === '/repos/o/r/issues/42')
       return { status: 410, body: { message: 'This issue was deleted' } };
     return { status: 500, body: { unexpected: url } };
@@ -957,8 +967,8 @@ test('a forum topic whose issue was deleted is skipped instead of failing the ru
     expect(stdout).toContain('Copied 0 forum replies to GitHub.');
     expect(
       fake.hits,
-      'a deleted issue has no comments or topic posts to read',
-    ).not.toContainEqual(expect.stringMatching(/comments|^\/t\//));
+      'a deleted issue has no comments to read',
+    ).not.toContainEqual(expect.stringMatching(/comments/));
   } finally {
     fake.server.close();
   }
@@ -1224,6 +1234,53 @@ test('a forum reply longer than a GitHub comment is shortened, keeping its link 
   }
 });
 
+test('one failing topic is reported while later topics still sync, and the run fails', async () => {
+  const fake = await fakeApi((method, url) => {
+    if (url.startsWith('/c/5/l/latest.json'))
+      return {
+        status: 200,
+        body: {
+          topic_list: { topics: [recentTopic(90, 4), recentTopic(91, 3)] },
+        },
+      };
+    if (url === '/t/90.json') return { status: 403, body: { errors: ['no'] } };
+    if (url === '/t/91.json')
+      return {
+        status: 200,
+        body: { id: 91, slug: 'crash', post_stream: { stream: [1, 501] } },
+      };
+    if (url.startsWith('/t/91/posts.json'))
+      return {
+        status: 200,
+        body: { post_stream: { posts: [firstPost, reply] } },
+      };
+    if (url === '/repos/o/r/issues/3')
+      return {
+        status: 200,
+        body: { number: 3, repository_url: `${fake.origin}/repos/o/r` },
+      };
+    if (url.startsWith('/repos/o/r/issues/3/comments'))
+      return method === 'POST'
+        ? { status: 201 }
+        : { status: 200, body: [topicLink(91)] };
+    return { status: 500, body: { unexpected: url } };
+  });
+  try {
+    const run = await runMode('to-github', fake.origin);
+    expect(run.code, 'a failed topic must fail the run').not.toBe(0);
+    expect(run.stderr).toContain('topic 90');
+    expect(
+      fake.hits.filter(
+        ({ method, url }) =>
+          method === 'POST' && url.startsWith('/repos/o/r/issues/3/comments'),
+      ),
+      'topic 91 still syncs after topic 90 fails',
+    ).toHaveLength(1);
+  } finally {
+    fake.server.close();
+  }
+});
+
 test('a GET retries a 5xx answer and a dropped connection, a POST does not', async () => {
   let calls = 0;
   const fake = await fakeApi((method, url) => {
@@ -1327,6 +1384,49 @@ test('discourse-comment-to-topic.yml skips comments from bots', () => {
     }
   ).jobs['to-forum'];
   expect(job.if).toContain("github.event.comment.user.type != 'Bot'");
+});
+
+test('a topic with no reply from a person costs no GitHub request', async () => {
+  const fake = await fakeApi((method, url) => {
+    if (url.startsWith('/c/5/l/latest.json'))
+      return {
+        status: 200,
+        body: { topic_list: { topics: [recentTopic(91, 3)] } },
+      };
+    if (url === '/t/91.json')
+      return {
+        status: 200,
+        body: { id: 91, slug: 'crash', post_stream: { stream: [1, 2] } },
+      };
+    if (url.startsWith('/t/91/posts.json'))
+      return {
+        status: 200,
+        body: {
+          post_stream: {
+            posts: [
+              firstPost,
+              {
+                id: 2,
+                post_number: 2,
+                post_type: 1,
+                username: API_USER,
+                raw: forumReplyBody(human),
+              },
+            ],
+          },
+        },
+      };
+    return { status: 500, body: { unexpected: `${method} ${url}` } };
+  });
+  try {
+    const run = await runMode('to-github', fake.origin);
+    expect(run.code).toBe(0);
+    expect(fake.hits.filter(({ url }) => url.startsWith('/repos/'))).toEqual(
+      [],
+    );
+  } finally {
+    fake.server.close();
+  }
 });
 
 test('mentions after an underscore and non-ASCII handles are defused', () => {
