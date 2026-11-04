@@ -6,7 +6,7 @@ name: Close and reopen Discourse topics
 on:
   issues:
     types: [closed, reopened]
-  pull_request_target:
+  pull_request_target: # zizmor: ignore[dangerous-triggers] fork pull requests need the forum secrets; only default-branch code runs (README.md#security).
     types: [closed, reopened]
 
 permissions:
