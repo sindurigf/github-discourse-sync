@@ -118,13 +118,23 @@ gh secret set DISCOURSE_API_USERNAME
   public repository. That means anyone can open a topic or post to the forum.
 - Forum replies in the synced category become public on GitHub, even when the
   forum needs a login.
-- Copied text, in both directions, gets a zero-width space after every `@`
-  and after every `#` before a digit, `&` before `#` or an entity name becomes
-  `&amp;`, and every `github.com` becomes `redirect.github.com`. So a copy
-  notifies nobody and adds no issue link or backlink.
+- Copied text, in both directions, is changed so these forms do not notify
+  anyone or link an issue:
+  - `@name`: a zero-width space after every `@`
+  - `#1`, `owner/repo#1`: a zero-width space after every `#` before a digit
+  - `GH-1`: a zero-width space after `GH-` before a digit, in any case
+  - `issues/1`, `pull/1`, `pulls/1`, `discussions/1`: a zero-width space
+    after the slash
+  - `github.com` links: changed to `redirect.github.com`, which GitHub
+    documents as adding no backlink
+  - `[quote="name"]`: a zero-width space after `[quote`
+  - HTML entities such as `&#64;`: the `&` becomes `&amp;`
+- Forms not in this list are copied as written.
+- The forum username at the top of a reply copied to GitHub gets the same
+  changes.
 - These changes apply everywhere in the text, including email addresses,
-  links and code. A copied email address, a link with `@` or a `#` and a
-  number, or a command with any of them needs editing before use.
+  links and code. A copied email address, a link with `@`, a `#` and a number
+  or an issue path, or a command with any of them needs editing before use.
 - Edits and deletions are not copied.
 - Review comments on code lines and review summaries are not copied.
 - Comments made before a pull request has its topic, such as while it is a
