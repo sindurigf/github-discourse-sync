@@ -55,7 +55,7 @@ const neutralizeEntities = (text) => text.replace(DANGEROUS_ENTITY, '&amp;');
 
 /* A link is skipped whole; otherwise an @ that starts a name. One pass, so linear. */
 const LINK_OR_MENTION =
-  /\b(?:https?:\/\/|www\.)\S+|(^|[^\p{L}\p{N}`])@(?=[\p{L}\p{N}_-])/gu;
+  /\b(?:https?:\/\/|www\.)\S+|(^|[^\p{L}\p{N}])@(?=[\p{L}\p{N}_-])/gu;
 
 /** Breaks `@name` so the other side does not notify a user of that name. */
 export const defuseMentions = (text) =>

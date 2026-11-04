@@ -1642,3 +1642,7 @@ test('a request GitHub or Discourse never received, such as a bad header, is not
     1_000,
   );
 });
+
+test('a mention after a lone backtick is defused', () => {
+  expect(defuseMentions('`@nami')).toBe('`@​nami');
+});
