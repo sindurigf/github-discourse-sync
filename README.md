@@ -39,8 +39,10 @@ How it behaves:
   hours.
 - All runs for one issue or pull request wait in a single queue
   (`concurrency.queue: max`), so the topic is normally there before its
-  comments, close or reopen arrive. GitHub usually runs the queue in order but does
-  not guarantee it.
+  comments, close or reopen arrive. GitHub runs the queue first in, first out
+  by the time each run started waiting, and says the order is not guaranteed:
+
+  [Workflow syntax: concurrency](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#concurrency)
 
 ## Use It
 
@@ -57,7 +59,7 @@ made with the template, also remove the issue form and the live demo note at
 the top of this file.
 
 Until the `DISCOURSE_URL` and `DISCOURSE_CATEGORY_ID` variables are set, every
-job is skipped. A fork or copy stays quiet until you set it up.
+sync job is skipped, so a fork or copy posts nothing. CI still runs.
 
 ## Setup
 
@@ -133,12 +135,17 @@ gh secret set DISCOURSE_API_USERNAME
   shortened, with a note that the full text is on GitHub. A forum reply longer
   than a GitHub comment, 65,536 characters, is shortened with a note that the
   full text is on the forum.
+- A topic syncs only while its title starts with `GitHub issue #<n>:` or
+  `GitHub pull request #<n>:` and it stays in the synced category. Retitling
+  or moving it stops forum replies from reaching GitHub.
 - If you change `DISCOURSE_API_USERNAME`, the old user's replies stay where
   they are and are not copied to GitHub again. A reopen still unaccepts the old
   user's close or merge reply, and a repeated run reuses it.
 - In a public repository, GitHub turns off the 15-minute schedule after 60
   days without repository activity. You can turn it back on in the **Actions**
-  tab.
+  tab. Each run reads only topics active in the last 48 hours, so a reply
+  posted while the schedule was off for longer is copied once its topic is
+  active again.
 - One issue or pull request can have up to 100 runs waiting, which is GitHub's
   limit. A run beyond that is canceled and not retried.
 
