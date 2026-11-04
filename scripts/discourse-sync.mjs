@@ -8,7 +8,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-/* Must match the comment issue-to-discourse.yml posts. */
+/* A bot comment starting with one of these links its topic; topicIdFromComments reads it. */
 export const LINK_COMMENT_PREFIX =
   'Discussion for this issue is open on the forum: ';
 export const PR_LINK_COMMENT_PREFIX =
@@ -39,7 +39,6 @@ const HTTP_NOT_FOUND = 404;
 const HTTP_GONE = 410;
 const ERROR_BODY_CHARS = 500;
 /* Discourse's default max_post_length; GitHub allows 65,536. */
-/* issue-to-discourse.yml passes the same limit and note to jq. */
 export const FORUM_MAX_POST_CHARS = 32_000;
 export const TRUNCATED_NOTE = '\n\n(Shortened; the full text is on GitHub.)';
 export const GITHUB_MAX_COMMENT_CHARS = 65_536;
@@ -95,7 +94,7 @@ export const shouldOpenTopic = (pullRequest) =>
 
 const REPO_KEY_HEX_CHARS = 12;
 
-/** The first 12 hex characters of the SHA-256 of owner/name; must match issue-to-discourse.yml. */
+/** The first 12 hex characters of the SHA-256 of owner/name. */
 export const repoKey = (repository) =>
   createHash('sha256')
     .update(repository)
@@ -170,14 +169,15 @@ const fit = (text, limit, note) => {
     : text;
 };
 
-export const pullRequestTopic = (pullRequest) => {
-  const body = pullRequest.body
-    ? defuseMentions(stripMarkers(pullRequest.body))
+/** The first post of the topic for an issue or a pull request. */
+export const newTopic = (item, pullRequest) => {
+  const body = item.body
+    ? defuseMentions(stripMarkers(item.body))
     : '_No description provided._';
-  const header = `Opened by ${pullRequest.user.login} on GitHub:\n\n${pullRequest.html_url}\n\n---\n\n`;
+  const header = `Opened by ${item.user.login} on GitHub:\n\n${item.html_url}\n\n---\n\n`;
   return {
     title: fit(
-      `GitHub pull request #${pullRequest.number}: ${pullRequest.title}`,
+      `GitHub ${pullRequest ? 'pull request' : 'issue'} #${item.number}: ${item.title}`,
       FORUM_MAX_TITLE_CHARS,
       TITLE_ELLIPSIS,
     ),
@@ -546,18 +546,20 @@ const toGithub = async () => {
 
 const openTopic = async () => {
   const event = JSON.parse(readFileSync(required('GITHUB_EVENT_PATH'), 'utf8'));
-  const pullRequest = event.pull_request;
-  if (!pullRequest) throw new Error('Expected a pull_request_target event.');
-  if (!shouldOpenTopic(pullRequest))
+  const item = event.pull_request ?? event.issue;
+  const pullRequest = Boolean(event.pull_request);
+  if (!item)
+    throw new Error('Expected an issues or pull_request_target event.');
+  if (pullRequest && !shouldOpenTopic(item))
     return console.log('A draft or a bot pull request; skipped.');
   const gh = github();
-  if (topicIdFromComments(await gh.comments(pullRequest.number)))
-    return console.log(`#${pullRequest.number} already has a forum topic.`);
+  if (topicIdFromComments(await gh.comments(item.number)))
+    return console.log(`#${item.number} already has a forum topic.`);
   const { base, get, post } = forum();
   const externalId = topicExternalId(
     required('GITHUB_REPOSITORY'),
-    pullRequest.number,
-    true,
+    item.number,
+    pullRequest,
   );
   /* A run that opened the topic but failed to comment left it behind; link that one. */
   const existing = await get(
@@ -572,7 +574,7 @@ const openTopic = async () => {
     (await post(
       '/posts.json',
       {
-        ...pullRequestTopic(pullRequest),
+        ...newTopic(item, pullRequest),
         category: parseCategoryId(required('DISCOURSE_CATEGORY_ID')),
         external_id: externalId,
       },
@@ -585,9 +587,10 @@ const openTopic = async () => {
       `Discourse answered without a topic: ${JSON.stringify(created)}`,
     );
   const url = `${base}/t/${slug}/${topicId}`;
-  await gh.comment(pullRequest.number, `${PR_LINK_COMMENT_PREFIX}${url}`);
+  const prefix = pullRequest ? PR_LINK_COMMENT_PREFIX : LINK_COMMENT_PREFIX;
+  await gh.comment(item.number, `${prefix}${url}`);
   console.log(
-    `#${pullRequest.number} ${existing ? 'linked existing' : 'opened'} topic ${topicId}.`,
+    `#${item.number} ${existing ? 'linked existing' : 'opened'} topic ${topicId}.`,
   );
 };
 
