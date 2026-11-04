@@ -20,6 +20,7 @@ import {
   earlierReplyId,
   stateSteps,
   topicStateChange,
+  repoKey,
   topicExternalId,
   topicTarget,
   mirroredPostIds,
@@ -706,7 +707,7 @@ const fakeForumAndGithub = (
         };
         if (url.startsWith('/repos/o/r/issues/12/comments'))
           return req.method === 'POST' ? json(201, {}) : json(200, []);
-        if (url === '/t/external_id/github-pr-12.json')
+        if (url === `/t/external_id/${topicExternalId('o/r', 12, true)}.json`)
           return topicExists
             ? json(301, {}, '/t/fix-the-menu/77.json')
             : json(404, { errors: ['Not found'] });
@@ -786,7 +787,9 @@ test('a new pull request topic carries its external_id and is linked', async () 
   try {
     await runOpenTopic(fake.origin);
     const created = fake.hits.find(({ url }) => url === '/posts.json');
-    expect(JSON.parse(created?.body ?? '{}').external_id).toBe('github-pr-12');
+    expect(JSON.parse(created?.body ?? '{}').external_id).toBe(
+      topicExternalId('o/r', 12, true),
+    );
     expect(linkComments(fake.hits)).toEqual([
       `${PR_LINK_COMMENT_PREFIX}${fake.origin}/t/fix-the-menu/78`,
     ]);
@@ -795,12 +798,44 @@ test('a new pull request topic carries its external_id and is linked', async () 
   }
 });
 
-test('issue-to-discourse.yml uses the external_id the script would give an issue', () => {
-  expect(topicExternalId(3, false)).toBe('github-issue-3');
+test('repositories that share a forum get different external_ids that Discourse accepts', () => {
+  const longest = `${'o'.repeat(39)}/${'r'.repeat(100)}`;
+  const ids = [
+    topicExternalId('o/r', 1, false),
+    topicExternalId('o/other', 1, false),
+    topicExternalId('o/r', 1, true),
+    topicExternalId(longest, 2_147_483_647, true),
+  ];
+  expect(new Set(ids).size, 'two topics share an external_id').toBe(ids.length);
+  for (const id of ids) expect(id).toMatch(/^[\w-]{1,50}$/);
+  expect(repoKey('o/r')).toMatch(/^[0-9a-f]{12}$/);
+});
+
+test('issue-to-discourse.yml builds the external_id the script would give an issue', async () => {
+  const run =
+    steps(
+      workflows().find(({ name }) => name === 'issue-to-discourse.yml')!
+        .workflow,
+    ).find((step) => step.run?.includes('external_id='))?.run ?? '';
+  const idScript = run.match(/^ *repo_key=.*\n *external_id=.*$/m)?.[0];
   expect(
-    readFileSync('.github/workflows/issue-to-discourse.yml', 'utf8'),
-    'issue-to-discourse.yml no longer gives topics the external_id the script uses',
-  ).toContain('external_id="github-issue-${ISSUE_NUMBER}"');
+    idScript,
+    'the repo_key and external_id lines are missing',
+  ).toBeDefined();
+  for (const repository of ['o/r', 'example-owner/a.b_c-d']) {
+    const { stdout } = await promisify(execFile)(
+      'bash',
+      ['-euo', 'pipefail', '-c', `${idScript}\nprintf '%s' "$external_id"`],
+      {
+        env: {
+          PATH: process.env['PATH'],
+          GITHUB_REPOSITORY: repository,
+          ISSUE_NUMBER: '3',
+        },
+      },
+    );
+    expect(stdout).toBe(topicExternalId(repository, 3, false));
+  }
 });
 
 test('a state reply posted by an earlier API user stays on the forum', () => {
@@ -974,7 +1009,7 @@ const issueTopicPayload = async (
         ISSUE_BODY: body,
         ISSUE_URL: 'https://github.com/o/r/issues/3',
         ISSUE_AUTHOR: 'robin',
-        external_id: 'github-issue-3',
+        external_id: topicExternalId('o/r', 3, false),
       },
       maxBuffer: 1024 * 1024,
     },

@@ -51,7 +51,8 @@ jobs:
           fi
           base="${DISCOURSE_URL%/}"
           # Must match topicExternalId in scripts/discourse-sync.mjs.
-          external_id="github-issue-${ISSUE_NUMBER}"
+          repo_key=$(printf '%s' "$GITHUB_REPOSITORY" | sha256sum | cut -c1-12)
+          external_id="gh-${repo_key}-issue-${ISSUE_NUMBER}"
           # Not followed: curl -L would send Api-Key to any host the redirect names.
           lookup=$(curl -sS --max-time 30 -o /dev/null -w '%{http_code} %{redirect_url}' \
             "${base}/t/external_id/${external_id}.json" \

@@ -4,6 +4,7 @@
  * `open-topic`, `to-forum` and `state` read GITHUB_EVENT_PATH; `to-github` copies recent replies (README.md).
  */
 
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
@@ -76,9 +77,18 @@ export const topicTarget = (title) => {
 export const shouldOpenTopic = (pullRequest) =>
   !pullRequest.draft && pullRequest.user?.type !== 'Bot';
 
-/** The topic's external_id; must match issue-to-discourse.yml. Discourse allows 50 of [\w-]. */
-export const topicExternalId = (number, pullRequest) =>
-  `github-${pullRequest ? 'pr' : 'issue'}-${number}`;
+const REPO_KEY_HEX_CHARS = 12;
+
+/** The first 12 hex characters of the SHA-256 of owner/name; must match issue-to-discourse.yml. */
+export const repoKey = (repository) =>
+  createHash('sha256')
+    .update(repository)
+    .digest('hex')
+    .slice(0, REPO_KEY_HEX_CHARS);
+
+/* external_id is unique across the forum, so it carries the repository; Discourse allows 50 of [\w-]. */
+export const topicExternalId = (repository, number, pullRequest) =>
+  `gh-${repoKey(repository)}-${pullRequest ? 'pr' : 'issue'}-${number}`;
 
 const CLOSED_PREFIX = 'Closed on GitHub';
 const MERGED_PREFIX = 'Merged on GitHub';
@@ -477,7 +487,11 @@ const openTopic = async () => {
   if (topicIdFromComments(await gh.comments(pullRequest.number)))
     return console.log(`#${pullRequest.number} already has a forum topic.`);
   const { base, get, post } = forum();
-  const externalId = topicExternalId(pullRequest.number, true);
+  const externalId = topicExternalId(
+    required('GITHUB_REPOSITORY'),
+    pullRequest.number,
+    true,
+  );
   /* A run that opened the topic but failed to comment left it behind; link that one. */
   const existing = await get(
     `/t/external_id/${externalId}.json`,
