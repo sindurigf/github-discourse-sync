@@ -1128,6 +1128,56 @@ const fakeApi = (
     );
   });
 
+const runMode = async (
+  mode: string,
+  origin: string,
+  event?: unknown,
+): Promise<{ code: number; stdout: string; stderr: string }> => {
+  const eventPath = join(mkdtempSync(join(tmpdir(), 'discourse-')), 'e.json');
+  writeFileSync(eventPath, JSON.stringify(event ?? {}));
+  try {
+    const { stdout, stderr } = await promisify(execFile)(
+      process.execPath,
+      ['scripts/discourse-sync.mjs', mode],
+      {
+        env: {
+          PATH: process.env.PATH,
+          GITHUB_EVENT_PATH: eventPath,
+          GITHUB_API_URL: origin,
+          GITHUB_REPOSITORY: 'o/r',
+          GITHUB_TOKEN: 'gh-token',
+          DISCOURSE_URL: origin,
+          DISCOURSE_CATEGORY_ID: '5',
+          DISCOURSE_API_KEY: 'key',
+          DISCOURSE_API_USERNAME: API_USER,
+        },
+      },
+    );
+    return { code: 0, stdout, stderr };
+  } catch (error) {
+    const failed = error as { code: number; stdout: string; stderr: string };
+    return { code: failed.code, stdout: failed.stdout, stderr: failed.stderr };
+  }
+};
+
+const recentTopic = (id: number, issue: number) => ({
+  id,
+  title: `GitHub issue #${issue}: Crash`,
+  category_id: 5,
+  bumped_at: new Date().toISOString(),
+});
+const topicLink = (topicId: number) => ({
+  user: { login: BOT_LOGIN, type: 'Bot' },
+  body: `${LINK_COMMENT_PREFIX}https://forum.example/t/crash/${topicId}`,
+});
+const firstPost = {
+  id: 1,
+  post_number: 1,
+  post_type: 1,
+  username: API_USER,
+  raw: 'Opened',
+};
+
 test('a nested marker in forum text cannot mark another post as mirrored', () => {
   const copied = githubCommentBody(
     {
@@ -1206,4 +1256,45 @@ test('ordinary text that starts like a mirror header is still copied both ways',
     ),
     'a mirror an earlier API user posted is still recognized',
   ).toBe(false);
+});
+
+test('a re-run of a comment already on the forum posts nothing', async () => {
+  const fake = await fakeApi((method, url) => {
+    if (url.startsWith('/repos/o/r/issues/3/comments'))
+      return { status: 200, body: [topicLink(42)] };
+    if (url === '/t/42.json')
+      return {
+        status: 200,
+        body: { id: 42, slug: 'crash', post_stream: { stream: [1, 7] } },
+      };
+    if (url.startsWith('/t/42/posts.json'))
+      return {
+        status: 200,
+        body: {
+          post_stream: {
+            posts: [
+              firstPost,
+              {
+                id: 7,
+                post_number: 2,
+                post_type: 1,
+                username: API_USER,
+                raw: forumReplyBody(human),
+              },
+            ],
+          },
+        },
+      };
+    return { status: 500, body: { unexpected: `${method} ${url}` } };
+  });
+  try {
+    const run = await runMode('to-forum', fake.origin, {
+      comment: human,
+      issue: { number: 3 },
+    });
+    expect(run.code).toBe(0);
+    expect(fake.hits.filter(({ method }) => method === 'POST')).toEqual([]);
+  } finally {
+    fake.server.close();
+  }
 });
