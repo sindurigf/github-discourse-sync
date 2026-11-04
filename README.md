@@ -139,8 +139,8 @@ gh secret set DISCOURSE_API_USERNAME
   They check out only the default branch and never run the pull request's
   code. Tests check every `pull_request_target` workflow for a checkout of
   another ref and for a step that fetches the pull request.
-- Issue and comment text reaches the script through the event file or
-  environment variables, never through `${{ }}` inside a shell script.
+- Issue, pull request and comment text reaches the script through the event
+  file, never through `${{ }}` inside a shell script.
 - Requests do not follow a redirect to another host, so the API key goes only
   to `DISCOURSE_URL`.
 - Every action is pinned to a commit SHA. A test checks this and the rule
