@@ -5,9 +5,10 @@ body:
   - type: markdown
     attributes:
       value: >-
-        This issue, its comments, and closing or reopening it are copied to a
-        forum topic. Forum replies come back here as comments. Please do not
-        post anything private. Edits and deletions are not copied.
+        This issue and its comments are copied to a forum topic. Closing or
+        reopening it closes or reopens the topic too. Forum replies come back
+        here as comments. Please do not post anything private. Edits and
+        deletions are not copied.
   - type: textarea
     id: body
     attributes:

@@ -942,34 +942,42 @@ const workflows = (): { name: string; workflow: Workflow }[] =>
 const steps = (workflow: Workflow): Step[] =>
   Object.values(workflow.jobs ?? {}).flatMap((job) => job.steps ?? []);
 
-/* Function: the shell path for issues keeps the same post limit and mention rule as the script. */
-const issueTopicPayload = async (body: string): Promise<{ raw: string }> => {
+/* Function: the shell path for issues keeps the same category rule, post limit and mention rule as the script. */
+const issueTopicPayload = async (
+  body: string,
+  categoryId = '5',
+): Promise<{ raw: string }> => {
   const run =
     steps(
       workflows().find(({ name }) => name === 'issue-to-discourse.yml')!
         .workflow,
     ).find((step) => step.run?.includes('payload=$(jq'))?.run ?? '';
-  const filter = run.match(/'(\("Opened by "[\s\S]*?\})'\)/)?.[1];
-  const maxChars = run.match(/^\s*max_chars=(\d+)$/m)?.[1];
-  const note = run.match(/^\s*note=\$'(.*)'$/m)?.[1]?.replaceAll('\\n', '\n');
-  expect(filter, 'the jq filter is missing').toBeDefined();
-  expect(Number(maxChars)).toBe(FORUM_MAX_POST_CHARS);
-  expect(note).toBe(TRUNCATED_NOTE);
+  const payloadScript = run.match(
+    /^ *if \[\[ ! "\$DISCOURSE_CATEGORY_ID"[\s\S]*?\}'\)$/m,
+  )?.[0];
+  expect(
+    payloadScript,
+    'the category check and jq payload are missing',
+  ).toBeDefined();
+  expect(Number(run.match(/^\s*max_chars=(\d+)$/m)?.[1])).toBe(
+    FORUM_MAX_POST_CHARS,
+  );
   const { stdout } = await promisify(execFile)(
-    'jq',
-    [
-      '-n',
-      ...['--arg', 'title', 'GitHub issue #3: Crash'],
-      ...['--arg', 'body', body],
-      ...['--arg', 'url', 'https://github.com/o/r/issues/3'],
-      ...['--arg', 'author', 'robin'],
-      ...['--arg', 'external_id', 'github-issue-3'],
-      ...['--arg', 'note', note!],
-      ...['--argjson', 'max_chars', maxChars!],
-      ...['--argjson', 'category', '5'],
-      filter!,
-    ],
-    { maxBuffer: 1024 * 1024 },
+    'bash',
+    ['-euo', 'pipefail', '-c', `${payloadScript}\nprintf '%s' "$payload"`],
+    {
+      env: {
+        PATH: process.env['PATH'],
+        DISCOURSE_CATEGORY_ID: categoryId,
+        ISSUE_NUMBER: '3',
+        ISSUE_TITLE: 'Crash',
+        ISSUE_BODY: body,
+        ISSUE_URL: 'https://github.com/o/r/issues/3',
+        ISSUE_AUTHOR: 'robin',
+        external_id: 'github-issue-3',
+      },
+      maxBuffer: 1024 * 1024,
+    },
   );
   return JSON.parse(stdout);
 };
@@ -985,6 +993,17 @@ test('an issue body that fits is posted whole, with mentions defused', async () 
   const { raw } = await issueTopicPayload('Ping @robin about it.');
   expect(raw).toContain('Ping @​robin about it.');
   expect(raw).not.toContain(TRUNCATED_NOTE.trim());
+});
+
+test('issue-to-discourse.yml refuses a category id that is not a positive whole number', async () => {
+  for (const value of ['github', '0', '5.5']) {
+    await expect(
+      issueTopicPayload('Body', value),
+      `${value} was accepted`,
+    ).rejects.toMatchObject({
+      stdout: expect.stringContaining('::error::Set DISCOURSE_CATEGORY_ID'),
+    });
+  }
 });
 
 test('a category id that is not a positive whole number is refused', () => {

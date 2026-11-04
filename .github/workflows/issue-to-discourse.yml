@@ -64,11 +64,15 @@ jobs:
             exit 0
           fi
           if [ "$status" = "403" ]; then
-            echo "::error::Discourse answered 403 for topic ${external_id}. The API key needs the topics read and write scopes."
+            echo "::error::Discourse answered 403 for topic ${external_id}. Check the topics read scope and that the sync user can see the category."
             exit 1
           fi
           if [ "$status" != "404" ]; then
             echo "::error::Discourse answered ${lookup} for topic ${external_id}."
+            exit 1
+          fi
+          if [[ ! "$DISCOURSE_CATEGORY_ID" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::Set DISCOURSE_CATEGORY_ID to the category's number, such as 5."
             exit 1
           fi
           # FORUM_MAX_POST_CHARS and TRUNCATED_NOTE in scripts/discourse-sync.mjs.
@@ -84,7 +88,7 @@ jobs:
             --argjson max_chars "$max_chars" \
             --argjson category "$DISCOURSE_CATEGORY_ID" \
             '("Opened by " + $author + " on GitHub:\n\n" + $url + "\n\n---\n\n") as $head
-            | (if $body == "" then "_No description provided._" else ($body | gsub("(?<a>^|[^\\w`/])@(?<b>[\\w-])"; "\(.a)@\u200b\(.b)")) end) as $text
+            | (if $body == "" then "_No description provided._" else ($body | gsub("(?<a>^|[^A-Za-z0-9_`/])@(?<b>[A-Za-z0-9_-])"; "\(.a)@\u200b\(.b)")) end) as $text
             | { title: ($title | if length > 255 then .[0:254] + "…" else . end),
                 category: $category,
                 external_id: $external_id,
@@ -96,7 +100,7 @@ jobs:
             -H "Api-Key: ${DISCOURSE_API_KEY}" \
             -H "Api-Username: ${DISCOURSE_API_USERNAME}" \
             -d "$payload"); then
-            echo "::error::Discourse refused the topic: ${response}"
+            echo "::error::Discourse refused the topic. A 403 means the API key lacks the topics write scope. ${response}"
             exit 1
           fi
           topic_id=$(printf '%s' "$response" | jq -r '.topic_id // empty')

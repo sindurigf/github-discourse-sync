@@ -27,8 +27,8 @@ const MS_PER_HOUR = 3_600_000;
 const POSTS_PER_REQUEST = 100;
 const GITHUB_PAGE_SIZE = 100;
 const MAX_ATTEMPTS = 5;
-/* Keeps a long Retry-After inside the job's timeout-minutes. */
-const MAX_RETRY_AFTER_S = 60;
+/* One request with four waits and five 30 s timeouts takes at most 4.5 minutes. */
+const MAX_RETRY_AFTER_S = 30;
 const BACKOFF_BASE_MS = 2_000;
 const MS_PER_S = 1_000;
 const REQUEST_TIMEOUT_MS = 30_000;

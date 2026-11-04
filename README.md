@@ -37,8 +37,8 @@ How it behaves:
   hours.
 - All runs for one issue or pull request wait in a single queue
   (`concurrency.queue: max`), so the topic is normally there before its
-  comments, close or reopen arrive. GitHub runs the queue in order but does not
-  guarantee it.
+  comments, close or reopen arrive. GitHub usually runs the queue in order but does
+  not guarantee it.
 
 ## Use It
 
@@ -63,13 +63,13 @@ job is skipped. A fork or copy stays quiet until you set it up.
 
 1. Create a user for the sync, for example `github-bot`. This user posts every
    topic and reply.
-2. Let it close and reopen topics. It needs to be staff, trust level 4, or a
+2. Let it close and reopen topics. It needs to be staff, trust level 4 or a
    moderator of the category. Without these rights, the close or reopen fails
    with an error that names them. A close still posts its reply first, but a
    reopen posts nothing.
 3. Turn on Solved for the category so a reply can be marked as the solution.
    Any of these works: the Support category type, the site setting
-   `allow_solved_on_all_topics`, or in older versions the category setting
+   `allow_solved_on_all_topics` or, in older versions, the category setting
    "Allow topic owner and staff to mark a reply as the solution". Without
    Solved, topics still close.
 4. At `/admin/api/keys`, create a granular key for that single user with these
@@ -77,8 +77,8 @@ job is skipped. A fork or copy stays quiet until you set it up.
    - `topics`: `write`, `read`, `read_lists`, `status`
    - `solved`: `answer`
 
-   If a scope is missing, the job fails. The script names the scope, and
-   `issue-to-discourse.yml` names the topics scopes on a 403.
+   If a scope is missing, the job fails with an error that names the scope it
+   needs.
 
 5. Find the category ID. It is the number at the end of the category URL, such
    as `5` in `https://forum.example.com/c/github/5`.
@@ -110,22 +110,23 @@ gh secret set DISCOURSE_API_USERNAME
 
 ## Limits and Privacy
 
-- Anyone can open an issue, a pull request from a fork, or a comment on a
+- Anyone can open an issue, a pull request from a fork or a comment on a
   public repository. That means anyone can open a topic or post to the forum.
 - Forum replies in the synced category become public on GitHub, even when the
   forum needs a login.
 - Copied text breaks `@mentions` on both sides, so nobody gets notified.
 - Edits and deletions are not copied.
 - Review comments on code lines and review summaries are not copied.
-- Comments on a draft pull request are not copied. Its topic only opens once
-  it is ready for review.
-- An issue or pull request text longer than 32,000 characters is shortened on
-  the forum, with a note that the full text is on GitHub.
+- Comments made before a pull request has its topic, such as while it is a
+  first draft, are not copied.
+- Text that would make a forum post longer than 32,000 characters is
+  shortened, with a note that the full text is on GitHub.
 - If you change `DISCOURSE_API_USERNAME`, the old user's replies stay where
   they are and are not copied to GitHub again. A reopen still unaccepts the old
   user's close or merge reply, and a repeated run reuses it.
 - In a public repository, GitHub turns off the 15-minute schedule after 60
-  days without repository activity. You can turn it back on in the **Actions** tab.
+  days without repository activity. You can turn it back on in the **Actions**
+  tab.
 - One issue or pull request can have up to 100 runs waiting, which is GitHub's
   limit. A run beyond that is canceled and not retried.
 
