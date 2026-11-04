@@ -1104,3 +1104,16 @@ test('a nested marker in forum text cannot mark another post as mirrored', () =>
     ...mirroredPostIds([{ user: { login: BOT_LOGIN }, body: copied }]),
   ]).toEqual([600]);
 });
+
+test('a pinned topic bumped inside the window syncs, an old pinned one neither syncs nor ends paging', () => {
+  const cutoff = Date.parse('2026-10-29T00:00:00Z');
+  const page = [
+    { id: 1, pinned: true, bumped_at: '2026-10-30T00:00:00Z' },
+    { id: 2, pinned: true, bumped_at: '2020-01-01T00:00:00Z' },
+    { id: 3, bumped_at: '2026-10-30T00:00:00Z' },
+  ];
+  expect(splitByActivity(page, cutoff)).toEqual({
+    recent: [page[0], page[2]],
+    older: false,
+  });
+});
