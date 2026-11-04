@@ -33,6 +33,9 @@ import {
   FORUM_MAX_POST_CHARS,
   TRUNCATED_NOTE,
   parseCategoryId,
+  GITHUB_MAX_COMMENT_CHARS,
+  GITHUB_TRUNCATED_NOTE,
+  markerOf,
 } from '../scripts/discourse-sync.mjs';
 
 /* Function: the issue and forum mirror never loops, never posts twice and never pings anyone. */
@@ -1205,6 +1208,22 @@ test('a pinned topic bumped inside the window syncs, an old pinned one neither s
   });
 });
 
+test('a forum reply longer than a GitHub comment is shortened, keeping its link and marker', () => {
+  const url = 'https://forum.example/t/x/42/2';
+  for (const raw of ['x'.repeat(70_000), '😀'.repeat(70_000)]) {
+    const body = githubCommentBody({ ...reply, raw }, url);
+    expect(Array.from(body).length).toBeLessThanOrEqual(
+      GITHUB_MAX_COMMENT_CHARS,
+    );
+    expect(body).toContain(GITHUB_TRUNCATED_NOTE);
+    expect(body).toContain(url);
+    expect(body.endsWith(markerOf(reply.id))).toBe(true);
+    expect(body, 'a cut must not split a surrogate pair').not.toMatch(
+      /[\uD800-\uDBFF](?![\uDC00-\uDFFF])/,
+    );
+  }
+});
+
 test('a GET retries a 5xx answer and a dropped connection, a POST does not', async () => {
   let calls = 0;
   const fake = await fakeApi((method, url) => {
@@ -1308,4 +1327,35 @@ test('discourse-comment-to-topic.yml skips comments from bots', () => {
     }
   ).jobs['to-forum'];
   expect(job.if).toContain("github.event.comment.user.type != 'Bot'");
+});
+
+test('mentions after an underscore and non-ASCII handles are defused', () => {
+  expect(defuseMentions('_@nami_')).toBe('_@​nami_');
+  expect(defuseMentions('hi @ñandú')).toBe('hi @​ñandú');
+  expect(defuseMentions('mail a@b.example')).toBe('mail a@b.example');
+});
+
+test('a long forum reply is copied in linear time', () => {
+  const started = performance.now();
+  githubCommentBody(
+    { ...reply, raw: 'a/'.repeat(30_000) + 'x'.repeat(70_000) },
+    'https://forum.example/t/x/42/2',
+  );
+  expect(
+    performance.now() - started,
+    'the reference pattern backtracks on long text',
+  ).toBeLessThan(1_000);
+});
+
+test('copied forum text links to other GitHub issues without creating backlinks', () => {
+  const body = githubCommentBody(
+    {
+      ...reply,
+      raw: 'See https://github.com/other/repo/issues/1 and other/repo#2.',
+    },
+    'https://forum.example/t/x/42/2',
+  );
+  expect(body).toContain('https://redirect.github.com/other/repo/issues/1');
+  expect(body).not.toContain('https://github.com/other');
+  expect(body).not.toContain('other/repo#2');
 });
