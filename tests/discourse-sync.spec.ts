@@ -11,6 +11,7 @@ import {
   BOT_LOGIN,
   LINK_COMMENT_PREFIX,
   defuseMentions,
+  defuseReferences,
   forumReplyBody,
   githubCommentBody,
   PR_LINK_COMMENT_PREFIX,
@@ -1450,4 +1451,18 @@ test('mentions written as HTML entities or after a slash are defused', () => {
     'a link is left whole',
   ).toBe('https://forum.example.com/u/@octocat');
   expect(defuseMentions('a &lt; b &amp; c')).toBe('a &lt; b &amp; c');
+});
+
+test('references written with HTML entities are defused and links keep their fragments', () => {
+  expect(defuseReferences('cli/cli&#35;2')).toBe('cli/cli&amp;#35;2');
+  expect(defuseReferences('[x](https&#58;//github.com/cli/cli/issues/3)')).toBe(
+    '[x](https&amp;#58;//github.com/cli/cli/issues/3)',
+  );
+  expect(
+    defuseReferences('https://forum.example.com/t/x/123#4'),
+    'a link with a numeric fragment is left whole',
+  ).toBe('https://forum.example.com/t/x/123#4');
+  expect(defuseReferences('www.github.com/cli/cli/issues/3')).toBe(
+    'https://redirect.github.com/cli/cli/issues/3',
+  );
 });

@@ -63,14 +63,18 @@ export const defuseMentions = (text) =>
     before === undefined ? match : `${before}@\u200b`,
   );
 
+/* A link, rewritten only for its host; otherwise owner/repo#N. One pass, so linear. */
+const LINK_OR_REFERENCE =
+  /\b(?:https?:\/\/|www\.)\S+|(?<![\w.-])([\w-]{1,39}\/[\w.-]{1,100})#(?=\d)/giu;
+const GITHUB_HOST = /^(?:https?:\/\/)?(?:www\.)?github\.com\//i;
+
 /** Points GitHub links at redirect.github.com and breaks owner/repo#N, so a copy makes no backlink (README.md#limits-and-privacy). */
 export const defuseReferences = (text) =>
-  text
-    .replace(
-      /\bhttps?:\/\/(?:www\.)?github\.com\//gi,
-      'https://redirect.github.com/',
-    )
-    .replace(/(?<![\w.-])([\w-]{1,39}\/[\w.-]{1,100})#(?=\d)/g, '$1#\u200b');
+  neutralizeEntities(text).replace(LINK_OR_REFERENCE, (match, repo) =>
+    repo === undefined
+      ? match.replace(GITHUB_HOST, 'https://redirect.github.com/')
+      : `${repo}#\u200b`,
+  );
 
 export const markerOf = (postId) => `<!-- discourse-post:${postId} -->`;
 
