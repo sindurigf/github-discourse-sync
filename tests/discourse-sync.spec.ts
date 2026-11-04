@@ -1079,6 +1079,19 @@ test('a nested marker in forum text cannot mark another post as mirrored', () =>
   ]).toEqual([600]);
 });
 
+test('a pinned topic bumped inside the window syncs, an old pinned one neither syncs nor ends paging', () => {
+  const cutoff = Date.parse('2026-10-29T00:00:00Z');
+  const page = [
+    { id: 1, pinned: true, bumped_at: '2026-10-30T00:00:00Z' },
+    { id: 2, pinned: true, bumped_at: '2020-01-01T00:00:00Z' },
+    { id: 3, bumped_at: '2026-10-30T00:00:00Z' },
+  ];
+  expect(splitByActivity(page, cutoff)).toEqual({
+    recent: [page[0], page[2]],
+    older: false,
+  });
+});
+
 test('a forum reply longer than a GitHub comment is shortened, keeping its link and marker', () => {
   const url = 'https://forum.example/t/x/42/2';
   for (const raw of ['x'.repeat(70_000), '😀'.repeat(70_000)]) {
