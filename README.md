@@ -25,8 +25,10 @@ From Discourse to GitHub:
 
 How it behaves:
 
-- Each topic has the `external_id` `github-issue-<n>` or `github-pr-<n>`. A
-  run that repeats links the existing topic instead of opening a second one.
+- Each topic has the `external_id` `gh-<key>-issue-<n>` or `gh-<key>-pr-<n>`.
+  The key is the first 12 hex characters of the SHA-256 of `owner/name`, so
+  repositories that share a forum get different IDs. A run that repeats links
+  the existing topic instead of opening a second one.
 - Draft pull requests wait until they are ready for review. Pull requests
   opened by bots get no topic.
 - When an issue is completed or a pull request is merged, its close or merge
