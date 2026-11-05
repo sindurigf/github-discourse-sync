@@ -16,6 +16,7 @@ From GitHub to Discourse:
 | Pull request opened, reopened or ready for review                 | New topic if it has none yet, and the pull request gets a comment with its link | `pr-to-discourse.yml`            |
 | Comment on an issue or pull request conversation                  | Reply in the topic                                                              | `discourse-comment-to-topic.yml` |
 | Issue closed or reopened, pull request closed, merged or reopened | Reply in the topic, then the topic closes or reopens                            | `discourse-state.yml`            |
+| Pull request review: approved, changes requested or commented     | Reply in the topic with the review summary, within 15 minutes                   | `discourse-topic-to-issue.yml`   |
 
 From Discourse to GitHub:
 
@@ -161,7 +162,10 @@ headers carry it.
   links and code. A copied email address, a link with `@`, a `#` and a number
   or an issue path, or a command with any of them needs editing before use.
 - Edits and deletions are not copied.
-- Review comments on code lines and review summaries are not copied.
+- Review summaries are copied by the 15-minute schedule, so they reach the
+  forum up to 15 minutes later. An approval without a summary posts one line.
+  Review comments on code lines are not copied, and neither is a Commented
+  review that holds only those.
 - Comments made before a pull request has its topic, such as while it is a
   first draft, are not copied.
 - Text that would make a forum post longer than 32,000 characters is
@@ -213,6 +217,10 @@ headers carry it.
   another ref and for a step that fetches the pull request.
 - Issue, pull request and comment text reaches the script through the event
   file, never through `${{ }}` inside a shell script.
+- Review summaries are read through the API by the scheduled workflow. A
+  `pull_request_review` event from a fork runs without secrets and with a
+  read-only token, and `workflow_run` would add another trigger that runs with
+  secrets, so neither is used.
 - Requests do not follow a redirect to another host, so the API key goes only
   to `DISCOURSE_URL`.
 - Every action is pinned to a commit SHA. A test checks this and the rule

@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, test } from 'node:test';
 import {
   FORUM_READ_GAP_MS,
   LINK_COMMENT_PREFIX,
+  PR_LINK_COMMENT_PREFIX,
   activityCutoff,
   markerOf,
   splitByActivity,
@@ -79,7 +80,10 @@ describe('to-github', () => {
     const run = await runMode('to-github', fake);
     assert.equal(run.code, 0, run.stderr);
     assert.deepEqual(copiedBodies(3), ['First', '@\u200bluffy second']);
-    assert.match(run.stdout, /Copied 2 forum replies to GitHub\./);
+    assert.match(
+      run.stdout,
+      /Copied 2 forum replies to GitHub and 0 reviews to the forum\./,
+    );
   });
 
   test('a second run copies nothing', async () => {
@@ -627,6 +631,152 @@ describe('the activity cutoff', () => {
     assert.equal(
       activityCutoff(now, Date.parse('2026-10-01T00:00:00Z')),
       window,
+    );
+  });
+});
+
+/* Function: review summaries reach the topic once from the schedule; security: a fork's review needs no secrets in its own event. */
+describe('review summaries', () => {
+  let fake: FakeApis;
+  let nextReviewId = 900;
+  beforeEach(async () => {
+    fake = await startFakeApis();
+  });
+  afterEach(() => fake.close());
+
+  const review = (state: string, body: string | null, extra: object = {}) => {
+    nextReviewId += 1;
+    return {
+      id: nextReviewId,
+      user: { login: 'nami', type: 'User' },
+      state,
+      body,
+      submitted_at: hoursAgo(1),
+      html_url: `https://github.com/o/r/pull/12#pullrequestreview-${nextReviewId}`,
+      ...extra,
+    };
+  };
+  const setup = (reviews: ReturnType<typeof review>[], extra: object = {}) => {
+    fake.addIssue({
+      number: 12,
+      pullRequest: true,
+      updated_at: hoursAgo(0.5),
+      reviews,
+      comments: [
+        {
+          id: 1,
+          user: { login: BOT_LOGIN, type: 'Bot' },
+          body: `${PR_LINK_COMMENT_PREFIX}https://forum.example.com/t/fix/77`,
+          html_url: 'u',
+        },
+      ],
+      ...extra,
+    });
+    return fake.addTopic({
+      id: 77,
+      title: 'GitHub pull request #12: Fix',
+      bumped_at: hoursAgo(30),
+      posts: [
+        {
+          id: 1,
+          post_number: 1,
+          post_type: 1,
+          username: API_USER,
+          raw: 'Opened',
+        },
+      ],
+    });
+  };
+  const replies = (topic: { posts: { raw: string }[] }) =>
+    topic.posts.slice(1).map(({ raw }) => raw);
+
+  for (const [state, verb] of [
+    ['APPROVED', 'approved'],
+    ['CHANGES_REQUESTED', 'requested changes'],
+    ['COMMENTED', 'commented'],
+  ] as const)
+    test(`a review that ${verb} is copied with its body and link`, async () => {
+      const submitted = review(state, 'Looks right.');
+      const topic = setup([submitted]);
+      const run = await runMode('to-github', fake);
+      assert.equal(run.code, 0, run.stderr);
+      assert.deepEqual(replies(topic), [
+        `nami ${verb} on GitHub:\n\nLooks right.\n\n[View on GitHub](${submitted.html_url})`,
+      ]);
+    });
+
+  test('an approval without a body posts its one header line and link', async () => {
+    const submitted = review('APPROVED', '');
+    const topic = setup([submitted]);
+    await runMode('to-github', fake);
+    assert.deepEqual(replies(topic), [
+      `nami approved on GitHub.\n\n[View on GitHub](${submitted.html_url})`,
+    ]);
+  });
+
+  for (const [name, skipped] of [
+    ['a review with only code line comments', review('COMMENTED', '')],
+    ['a pending review', review('PENDING', 'draft')],
+    ['a dismissed review', review('DISMISSED', 'old')],
+    [
+      'a review by a bot',
+      review('APPROVED', 'ok', { user: { login: 'ci[bot]', type: 'Bot' } }),
+    ],
+    [
+      'a review older than the cutoff',
+      review('APPROVED', 'old', { submitted_at: hoursAgo(72) }),
+    ],
+  ] as const)
+    test(`${name} is not copied`, async () => {
+      const topic = setup([skipped]);
+      const run = await runMode('to-github', fake);
+      assert.equal(run.code, 0, run.stderr);
+      assert.deepEqual(replies(topic), []);
+    });
+
+  test('a second run posts nothing new', async () => {
+    const topic = setup([
+      review('APPROVED', 'Ship it.'),
+      review('COMMENTED', 'One nit.'),
+    ]);
+    await runMode('to-github', fake);
+    const run = await runMode('to-github', fake);
+    assert.equal(run.code, 0, run.stderr);
+    assert.equal(replies(topic).length, 2);
+  });
+
+  test('a review on a pull request from a fork is copied by the scheduled run', async () => {
+    const topic = setup([review('APPROVED', 'Thanks.')], { fork: true });
+    const run = await runMode('to-github', fake);
+    assert.equal(run.code, 0, run.stderr);
+    assert.equal(replies(topic).length, 1);
+  });
+
+  test('a review body is defused', async () => {
+    const topic = setup([review('COMMENTED', 'Ask @luffy about #3 and GH-4.')]);
+    await runMode('to-github', fake);
+    assert.match(replies(topic)[0]!, /@​luffy about #​3 and GH-​4/);
+  });
+
+  test('a pull request without a topic is skipped', async () => {
+    setup([review('APPROVED', 'ok')]);
+    fake.issues.get(12)!.comments.length = 0;
+    const run = await runMode('to-github', fake);
+    assert.equal(run.code, 0, run.stderr);
+    assert.ok(!fake.writes().some(({ url }) => url === '/posts.json'));
+  });
+
+  test('a copied review is not copied back to GitHub', async () => {
+    const submitted = review('APPROVED', 'Looks right.');
+    const topic = setup([submitted]);
+    await runMode('to-github', fake);
+    topic.bumped_at = new Date().toISOString();
+    const run = await runMode('to-github', fake);
+    assert.equal(run.code, 0, run.stderr);
+    assert.ok(
+      !fake.issues
+        .get(12)!
+        .comments.some(({ body }) => body.includes('wrote on the forum')),
     );
   });
 });

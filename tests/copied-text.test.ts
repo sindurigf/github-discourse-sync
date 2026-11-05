@@ -16,6 +16,7 @@ import {
   newTopic,
   parseCategoryId,
   repoKey,
+  reviewReplyBody,
   shouldMirrorComment,
   shouldMirrorPost,
   topicExternalId,
@@ -371,6 +372,37 @@ describe('links back to GitHub', () => {
     ],
   ])
     test(`a copied comment in ${name} is recognized and not copied back`, () => {
+      assert.equal(
+        shouldMirrorPost(
+          { ...reply, username: 'old-bot', raw },
+          API_USER,
+          none,
+        ),
+        false,
+      );
+    });
+
+  for (const [name, raw] of [
+    [
+      'with a body',
+      reviewReplyBody({
+        user: { login: 'nami' },
+        state: 'APPROVED',
+        body: 'Ship it.',
+        html_url: 'https://github.com/o/r/pull/12#pullrequestreview-5',
+      }),
+    ],
+    [
+      'without a body',
+      reviewReplyBody({
+        user: { login: 'nami' },
+        state: 'APPROVED',
+        body: '',
+        html_url: 'https://github.com/o/r/pull/12#pullrequestreview-5',
+      }),
+    ],
+  ])
+    test(`a copied review ${name} is recognized and not copied back, under any API user`, () => {
       assert.equal(
         shouldMirrorPost(
           { ...reply, username: 'old-bot', raw },

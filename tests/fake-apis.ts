@@ -25,7 +25,19 @@ export type Issue = {
   pullRequest?: boolean;
   deleted?: boolean;
   transferred?: boolean;
+  /* A pull request opened from a fork. */
+  fork?: boolean;
+  updated_at?: string;
+  reviews?: Review[];
   comments: Comment[];
+};
+export type Review = {
+  id: number;
+  user: { login: string; type: string };
+  state: string;
+  body: string | null;
+  submitted_at: string;
+  html_url: string;
 };
 export type Post = {
   id: number;
@@ -151,6 +163,30 @@ export const startFakeApis = async (
         ? { status: 200, body: { jobs: run.jobs } }
         : { status: 404, body: { message: 'Not Found' } };
     }
+    if (path === '/repos/o/r/pulls' && method === 'GET') {
+      const pulls = [...issues.values()]
+        .filter((issue) => issue.pullRequest)
+        .sort(
+          (a, b) =>
+            Date.parse(b.updated_at ?? '') - Date.parse(a.updated_at ?? ''),
+        );
+      const page = Number(query.get('page') ?? '1');
+      const size = Number(query.get('per_page') ?? '30');
+      return {
+        status: 200,
+        body: pulls.slice((page - 1) * size, page * size).map((pull) => ({
+          number: pull.number,
+          updated_at: pull.updated_at ?? new Date().toISOString(),
+          head: { repo: { fork: Boolean(pull.fork) } },
+        })),
+      };
+    }
+    const pullReviews = /^\/repos\/o\/r\/pulls\/(\d+)\/reviews$/.exec(path);
+    if (pullReviews && method === 'GET')
+      return {
+        status: 200,
+        body: issues.get(Number(pullReviews[1]))?.reviews ?? [],
+      };
     const issueMatch = /^\/repos\/o\/r\/issues\/(\d+)(\/comments)?$/.exec(path);
     if (!issueMatch) return { status: 500, body: { unexpected: path } };
     const issue = issues.get(Number(issueMatch[1]));
