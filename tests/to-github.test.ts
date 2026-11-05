@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, test } from 'node:test';
 import {
   FORUM_READ_GAP_MS,
   LINK_COMMENT_PREFIX,
+  activityCutoff,
   markerOf,
   splitByActivity,
 } from '../scripts/discourse-sync.mjs';
@@ -175,7 +176,9 @@ describe('to-github', () => {
     const run = await runMode('to-github', fake);
     assert.equal(run.code, 0, run.stderr);
     assert.ok(!fake.hits.some(({ url }) => url.startsWith('/t/42')));
-    assert.ok(!fake.hits.some(({ url }) => url.includes('page=1')));
+    assert.ok(
+      !fake.hits.some(({ url }) => url.startsWith('/c/5/l/latest.json?page=1')),
+    );
   });
 
   test('a pinned topic bumped inside the window syncs', async () => {
@@ -196,7 +199,9 @@ describe('to-github', () => {
     ]);
     const run = await runMode('to-github', fake);
     assert.equal(run.code, 0, run.stderr);
-    assert.ok(!fake.hits.some(({ url }) => url.startsWith('/repos/')));
+    assert.ok(
+      !fake.hits.some(({ url }) => url.startsWith('/repos/o/r/issues')),
+    );
   });
 
   for (const [name, setup] of [
@@ -383,6 +388,42 @@ describe('to-github', () => {
     }
   });
 
+  test('a run after a successful one reads only the topics bumped since then', async () => {
+    linkedIssue(3, 42);
+    linkedTopic(42, 3, [personReply('Old')], { bumped_at: hoursAgo(3) });
+    linkedIssue(4, 43);
+    linkedTopic(43, 4, [personReply('New')], { bumped_at: hoursAgo(0.1) });
+    fake.successfulRuns.push({ run_started_at: hoursAgo(1) });
+    const run = await runMode('to-github', fake);
+    assert.equal(run.code, 0, run.stderr);
+    assert.deepEqual(copiedBodies(4), ['New']);
+    assert.ok(
+      !fake.hits.some(({ url }) => url.startsWith('/t/42')),
+      'a topic with nothing new was read',
+    );
+  });
+
+  test('without a successful run, the run reads the whole lookback window', async () => {
+    linkedIssue(3, 42);
+    linkedTopic(42, 3, [personReply('Old')], { bumped_at: hoursAgo(40) });
+    const run = await runMode('to-github', fake);
+    assert.equal(run.code, 0, run.stderr);
+    assert.deepEqual(copiedBodies(3), ['Old']);
+  });
+
+  test('when the last run cannot be read, the run warns and reads the whole window', async () => {
+    linkedIssue(3, 42);
+    linkedTopic(42, 3, [personReply('Old')], { bumped_at: hoursAgo(40) });
+    fake.fail({ path: /\/actions\//, status: 403 });
+    const run = await runMode('to-github', fake);
+    assert.equal(run.code, 0, run.stderr);
+    assert.match(
+      run.stdout,
+      /::warning::Could not read the last successful run/,
+    );
+    assert.deepEqual(copiedBodies(3), ['Old']);
+  });
+
   test('a forum rate limit within a minute is waited out, not reported', async () => {
     linkedIssue(3, 42);
     linkedTopic(42, 3, [personReply('First')]);
@@ -498,5 +539,24 @@ describe('the latest list', () => {
 describe('forum pacing', () => {
   test('to-github reads the forum at no more than 40 requests a minute, leaving room for event runs', () => {
     assert.ok(60_000 / FORUM_READ_GAP_MS <= 40);
+  });
+});
+
+/* Function: a run reads only what changed since the last successful one, within the lookback window. */
+describe('the activity cutoff', () => {
+  const now = Date.parse('2026-11-05T12:00:00Z');
+  test('is the last successful start less 15 minutes', () => {
+    assert.equal(
+      activityCutoff(now, Date.parse('2026-11-05T11:45:00Z')),
+      Date.parse('2026-11-05T11:30:00Z'),
+    );
+  });
+  test('is 48 hours back without a successful run or when that run is older', () => {
+    const window = now - 48 * 3_600_000;
+    assert.equal(activityCutoff(now, null), window);
+    assert.equal(
+      activityCutoff(now, Date.parse('2026-10-01T00:00:00Z')),
+      window,
+    );
   });
 });

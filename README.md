@@ -35,8 +35,9 @@ How it behaves:
   reply is marked as the solution, unless the topic already has an accepted
   answer. A reopen unaccepts only those close or merge replies.
 - Discourse cannot call GitHub, so `discourse-topic-to-issue.yml` checks the
-  forum every 15 minutes. It copies replies from topics active in the last 48
-  hours.
+  forum every 15 minutes. It reads only topics bumped since its last
+  successful run started, less 15 minutes, and never more than the last 48
+  hours. On the first run, or when no run has succeeded, it reads 48 hours.
 - All runs for one issue or pull request wait in a single queue
   (`concurrency.queue: max`), so the topic is normally there before its
   comments, close or reopen arrive. GitHub's workflow syntax docs say queued
@@ -188,10 +189,14 @@ headers carry it.
 - The other workflows are not paced. A bulk action, such as closing 30 issues
   at once, starts that many runs in parallel and can pass the forum's limit,
   so some of them may fail and need a re-run.
+- Each topic read costs about 3.3 seconds with this pacing, so one run of
+  `discourse-topic-to-issue.yml` handles about 150 topics bumped since the last
+  successful run. With more, runs fail at their time limit and read the same
+  topics again until activity drops; replies older than 48 hours by then are
+  not copied.
 - After a long pause, such as a forum outage, the backlog of replies can take
-  several runs of `discourse-topic-to-issue.yml` to copy, and those runs may
-  fail until it catches up. Each run copies only replies not yet on GitHub, so
-  none is copied twice.
+  several runs to copy, and those runs may fail until it catches up. Each run
+  copies only replies not yet on GitHub, so none is copied twice.
 
 ## Security
 
