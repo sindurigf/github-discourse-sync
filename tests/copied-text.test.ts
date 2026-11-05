@@ -325,12 +325,69 @@ describe('a forum reply copied to GitHub', () => {
     });
 });
 
+/* Function: Discourse turns a link alone on its line into a card that repeats the GitHub text, so no copy has one. */
+describe('links back to GitHub', () => {
+  const bareLink = /^\s*https?:\/\/\S+\s*$/m;
+  test('a copied comment links back inline', () => {
+    assert.doesNotMatch(forumReplyBody(comment), bareLink);
+  });
+  test('a new topic links back inline', () => {
+    assert.doesNotMatch(
+      newTopic(
+        {
+          number: 1,
+          title: 't',
+          body: 'b',
+          html_url: 'https://github.com/o/r/issues/1',
+          user: { login: 'r' },
+        },
+        false,
+      ).raw,
+      bareLink,
+    );
+  });
+  test('a state reply links back inline', () => {
+    const reply = topicStateChange({
+      action: 'closed',
+      sender: { login: 'robin' },
+      issue: {
+        number: 3,
+        html_url: 'https://github.com/o/r/issues/3',
+        state_reason: 'completed',
+        closed_at: '2026-11-01T07:00:00Z',
+      },
+    })!.reply;
+    assert.doesNotMatch(reply, bareLink);
+    assert.match(
+      reply,
+      /\[View on GitHub\]\(https:\/\/github\.com\/o\/r\/issues\/3\)/,
+    );
+  });
+  for (const [name, raw] of [
+    ['the inline format', forumReplyBody(comment)],
+    [
+      'the earlier format with the link on its own line',
+      `robin wrote on GitHub:\n\nHi\n\n${comment.html_url}`,
+    ],
+  ])
+    test(`a copied comment in ${name} is recognized and not copied back`, () => {
+      assert.equal(
+        shouldMirrorPost(
+          { ...reply, username: 'old-bot', raw },
+          API_USER,
+          none,
+        ),
+        false,
+      );
+    });
+});
+
 /* Function: a GitHub comment on the forum names its author, links the comment and fits the forum's limit. */
 describe('a GitHub comment copied to the forum', () => {
   test('names the author without an @ and ends with the comment link', () => {
     assert.equal(
       forumReplyBody({ ...comment, body: 'Same, @nami.' }),
-      `robin wrote on GitHub:\n\nSame, @${ZWSP}nami.\n\n${comment.html_url}`,
+      `robin wrote on GitHub:\n\nSame, @${ZWSP}nami.\n\n[View on GitHub](${comment.html_url})`,
     );
   });
 
@@ -341,7 +398,11 @@ describe('a GitHub comment copied to the forum', () => {
     test(`longer than a forum post (${name}) is shortened with a note, keeping its link`, () => {
       const raw = forumReplyBody({ ...comment, body });
       assert.ok(codePoints(raw) <= FORUM_MAX_POST_CHARS);
-      assert.ok(raw.endsWith(`${TRUNCATED_NOTE}\n\n${comment.html_url}`));
+      assert.ok(
+        raw.endsWith(
+          `${TRUNCATED_NOTE}\n\n[View on GitHub](${comment.html_url})`,
+        ),
+      );
       assert.doesNotMatch(raw, LONE_SURROGATE);
     });
 });
@@ -367,7 +428,7 @@ describe('a new topic', () => {
   test('opens with the author and link, then the defused body', () => {
     assert.equal(
       newTopic(item, true).raw,
-      `Opened by robin on GitHub:\n\n${item.html_url}\n\n---\n\nFixes it, @${ZWSP}nami.`,
+      `Opened by robin on GitHub: [View on GitHub](${item.html_url})\n\n---\n\nFixes it, @${ZWSP}nami.`,
     );
   });
 
@@ -394,7 +455,9 @@ describe('a new topic', () => {
       const { raw } = newTopic({ ...item, body }, false);
       assert.ok(codePoints(raw) <= FORUM_MAX_POST_CHARS);
       assert.ok(
-        raw.startsWith(`Opened by robin on GitHub:\n\n${item.html_url}`),
+        raw.startsWith(
+          `Opened by robin on GitHub: [View on GitHub](${item.html_url})`,
+        ),
       );
       assert.ok(raw.endsWith(TRUNCATED_NOTE));
       assert.doesNotMatch(raw, LONE_SURROGATE);

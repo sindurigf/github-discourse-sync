@@ -17,7 +17,9 @@ export const PR_LINK_COMMENT_PREFIX =
 const LINK_PREFIXES = [LINK_COMMENT_PREFIX, PR_LINK_COMMENT_PREFIX];
 export const BOT_LOGIN = 'github-actions[bot]';
 const GITHUB_HEADER = /^\S+ wrote on GitHub:\n/;
-const GITHUB_COMMENT_FOOTER = /\n\S+#issuecomment-\d+$/;
+/* The link back, inline or, from earlier versions, alone on the last line. */
+const GITHUB_COMMENT_FOOTER =
+  /\n(?:\[View on GitHub\]\(\S+#issuecomment-\d+\)|\S+#issuecomment-\d+)$/;
 const MARKER = /<!-- discourse-post:(\d+) -->/g;
 const TOPIC_TITLE = /^GitHub (issue|pull request) #(\d+):/;
 const TOPIC_URL = /\/t\/[^/\s]+\/(\d+)\b/;
@@ -131,6 +133,9 @@ const CLOSED_PREFIX = 'Closed on GitHub';
 const MERGED_PREFIX = 'Merged on GitHub';
 const REOPENED_PREFIX = 'Reopened on GitHub';
 const STATE_PREFIXES = [CLOSED_PREFIX, MERGED_PREFIX, REOPENED_PREFIX];
+
+/** A link back to GitHub that Discourse shows as text; a URL alone on its line becomes a card repeating the GitHub text. */
+const viewOnGithub = (url) => `[View on GitHub](${url})`;
 const EVENT_TIME_LABEL = 'Event time: ';
 const STATE_REPLY_FIRST_LINE_END = / by \S+\.$/;
 /* Replies from versions without the event time end with the GitHub link instead. */
@@ -156,7 +161,7 @@ export const topicStateChange = (event) => {
   const at = item[timeField];
   if (!at)
     throw new Error(`#${item.number} ${event.action} without ${timeField}.`);
-  const footer = `\n\n${item.html_url}\n\n${EVENT_TIME_LABEL}${at}`;
+  const footer = `\n\n${viewOnGithub(item.html_url)}\n\n${EVENT_TIME_LABEL}${at}`;
   if (event.action === 'reopened')
     return {
       reply: `${REOPENED_PREFIX} by ${actor}.${footer}`,
@@ -194,7 +199,7 @@ const fit = (text, limit, note) => {
 /** The first post of the topic for an issue or a pull request. */
 export const newTopic = (item, pullRequest) => {
   const body = item.body ? defuseText(item.body) : '_No description provided._';
-  const header = `Opened by ${item.user.login} on GitHub:\n\n${item.html_url}\n\n---\n\n`;
+  const header = `Opened by ${item.user.login} on GitHub: ${viewOnGithub(item.html_url)}\n\n---\n\n`;
   return {
     title: fit(
       `GitHub ${pullRequest ? 'pull request' : 'issue'} #${item.number}: ${item.title}`,
@@ -262,7 +267,7 @@ export const splitByActivity = (topics, cutoff) => {
 
 export const forumReplyBody = (comment) => {
   const header = `${comment.user.login} wrote on GitHub:\n\n`;
-  const footer = `\n\n${comment.html_url}`;
+  const footer = `\n\n${viewOnGithub(comment.html_url)}`;
   const text = defuseText(comment.body ?? '');
   const room = FORUM_MAX_POST_CHARS - header.length - footer.length;
   return `${header}${fit(text, room, TRUNCATED_NOTE)}${footer}`;
@@ -602,11 +607,13 @@ const toForum = async () => {
   const { get, post } = forum();
   const { posts } = await topicPosts(get, topicId);
   const apiUsername = required('DISCOURSE_API_USERNAME').toLowerCase();
-  const footer = `\n\n${comment.html_url}`;
+  const footers = [viewOnGithub(comment.html_url), comment.html_url].map(
+    (link) => `\n\n${link}`,
+  );
   const copied = ({ username, raw }) =>
     username?.toLowerCase() === apiUsername &&
     isGithubMirror(raw) &&
-    (raw ?? '').trimEnd().endsWith(footer);
+    footers.some((footer) => (raw ?? '').trimEnd().endsWith(footer));
   if (posts.some(copied))
     return console.log(`Comment ${comment.id} is already in topic ${topicId}.`);
   const created = await post(
