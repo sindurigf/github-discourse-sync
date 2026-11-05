@@ -29,8 +29,8 @@ How it behaves:
   The key is the first 12 hex characters of the SHA-256 of `owner/name`, so
   repositories that share a forum get different IDs. A run that repeats links
   the existing topic instead of opening a second one.
-- Draft pull requests wait until they are ready for review. Pull requests
-  opened by bots get no topic.
+- Draft pull requests wait until they are ready for review. Issues and pull
+  requests opened by bots get no topic.
 - When an issue is completed or a pull request is merged, its close or merge
   reply is marked as the solution, unless the topic already has an accepted
   answer. A reopen unaccepts only those close or merge replies.
@@ -69,6 +69,8 @@ job is skipped. A fork or copy stays quiet until you set it up.
    moderator of the category. Without these rights, the close or reopen fails
    with an error that names them. A close still posts its reply first, but a
    reopen posts nothing.
+   Staff is the best choice: most Discourse rate limits, such as the wait
+   between new topics, do not apply to staff.
 3. Turn on Solved for the category so a reply can be marked as the solution.
    Any of these works: the Support category type, the site setting
    `allow_solved_on_all_topics` or, in older versions, the category setting
@@ -92,12 +94,12 @@ open.
 
 In **Settings > Secrets and variables > Actions**, add:
 
-| Name                     | Kind     | Value                                               |
-| ------------------------ | -------- | --------------------------------------------------- |
-| `DISCOURSE_URL`          | Variable | Forum base URL, such as `https://forum.example.com` |
-| `DISCOURSE_CATEGORY_ID`  | Variable | Category ID, such as `5`                            |
-| `DISCOURSE_API_KEY`      | Secret   | The granular API key                                |
-| `DISCOURSE_API_USERNAME` | Secret   | The sync user's username                            |
+| Name                     | Kind     | Value                                                          |
+| ------------------------ | -------- | -------------------------------------------------------------- |
+| `DISCOURSE_URL`          | Variable | Forum base URL over https, such as `https://forum.example.com` |
+| `DISCOURSE_CATEGORY_ID`  | Variable | Category ID, such as `5`                                       |
+| `DISCOURSE_API_KEY`      | Secret   | The granular API key                                           |
+| `DISCOURSE_API_USERNAME` | Secret   | The sync user's username                                       |
 
 Or with the GitHub CLI:
 
@@ -116,16 +118,47 @@ gh secret set DISCOURSE_API_USERNAME
   public repository. That means anyone can open a topic or post to the forum.
 - Forum replies in the synced category become public on GitHub, even when the
   forum needs a login.
-- Copied text breaks `@mentions` on both sides, so nobody gets notified.
+- Copied text, in both directions, is changed so these forms do not notify
+  anyone or link an issue:
+  - `@name`: a zero-width space after every `@`
+  - `#1`, `owner/repo#1`: a zero-width space after every `#` before a digit
+  - `GH-1`: a zero-width space after `GH-` before a digit, in any case
+  - `issues/1`, `pull/1`, `pulls/1`, `discussions/1`: a zero-width space
+    after the slash
+  - `github.com`: every occurrence, in any case, becomes
+    `redirect.github.com`, so `api.github.com` becomes
+    `api.redirect.github.com`. GitHub documents that a `redirect.github.com`
+    link adds no backlink:
+
+    [Autolinked references and URLs](https://docs.github.com/en/get-started/writing-on-github/working-with-advanced-formatting/autolinked-references-and-urls)
+
+  - `[quote="name"]` and `username:name`: a zero-width space after `[quote`
+    and before the colon in `username:`
+  - `discourse-post:`: a zero-width space before the colon, so copied text
+    cannot pose as a copy marker
+  - HTML entities such as `&#64;`: the `&` becomes `&amp;`
+- Forms not in this list are copied as written. A forum link in a GitHub
+  comment stays a link on the forum, and Discourse may notify the author of
+  the linked post.
+- The forum username at the top of a reply copied to GitHub gets the same
+  changes.
+- A backslash escape such as `github\.com`, `GH\-1` or `issues\/1` gets the
+  same change as the unescaped form.
+- These changes apply everywhere in the text, including email addresses,
+  links and code. A copied email address, a link with `@`, a `#` and a number
+  or an issue path, or a command with any of them needs editing before use.
 - Edits and deletions are not copied.
 - Review comments on code lines and review summaries are not copied.
 - Comments made before a pull request has its topic, such as while it is a
   first draft, are not copied.
 - Text that would make a forum post longer than 32,000 characters is
-  shortened, with a note that the full text is on GitHub.
+  shortened, with a note that the full text is on GitHub. A forum reply longer
+  than a GitHub comment, 65,536 characters, is shortened with a note that the
+  full text is on the forum.
 - If you change `DISCOURSE_API_USERNAME`, the old user's replies stay where
   they are and are not copied to GitHub again. A reopen still unaccepts the old
-  user's close or merge reply, and a repeated run reuses it.
+  user's close or merge reply. A repeated run reuses only a reply the current
+  user posted, so a re-run after the change posts its reply again.
 - In a public repository, GitHub turns off the 15-minute schedule after 60
   days without repository activity. You can turn it back on in the **Actions**
   tab.
@@ -139,8 +172,8 @@ gh secret set DISCOURSE_API_USERNAME
   They check out only the default branch and never run the pull request's
   code. Tests check every `pull_request_target` workflow for a checkout of
   another ref and for a step that fetches the pull request.
-- Issue and comment text reaches the script through the event file or
-  environment variables, never through `${{ }}` inside a shell script.
+- Issue, pull request and comment text reaches the script through the event
+  file, never through `${{ }}` inside a shell script.
 - Requests do not follow a redirect to another host, so the API key goes only
   to `DISCOURSE_URL`.
 - Every action is pinned to a commit SHA. A test checks this and the rule
