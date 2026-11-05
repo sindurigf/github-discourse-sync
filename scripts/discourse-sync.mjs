@@ -41,19 +41,33 @@ const ERROR_BODY_CHARS = 500;
 /* issue-to-discourse.yml passes the same limit and note to jq. */
 export const FORUM_MAX_POST_CHARS = 32_000;
 export const TRUNCATED_NOTE = '\n\n(Shortened; the full text is on GitHub.)';
+export const GITHUB_MAX_COMMENT_CHARS = 65_536;
+export const GITHUB_TRUNCATED_NOTE =
+  '\n\n(Shortened; the full text is on the forum.)';
 /* Discourse's default max_topic_title_length. */
 const FORUM_MAX_TITLE_CHARS = 255;
 const TITLE_ELLIPSIS = '…';
 const HTTP_TOO_MANY = 429;
 
-/** Breaks `@name` so the other side does not notify a user of that name. */
-export const defuseMentions = (text) =>
-  text.replace(/(^|[^\w`/])@(?=[\w-])/g, '$1@​');
-
 export const markerOf = (postId) => `<!-- discourse-post:${postId} -->`;
 
-/** Copied text loses any marker it carries, so it cannot claim a post as mirrored. */
-const stripMarkers = (text) => text.replace(MARKER, '');
+/**
+ * Copied text, in either direction, without context parsing: a zero-width space after every @, #digit,
+ * GH-digit, issues/ pull/ pulls/ discussions/ before a digit (backslash escapes included), [quote, username:
+ * and the marker keyword; entities that could decode to them are escaped and github.com becomes
+ * redirect.github.com (README.md#limits-and-privacy).
+ */
+export const defuseText = (text) =>
+  text
+    .replaceAll('discourse-post:', 'discourse-post\u200b:')
+    .replace(/&(?=#|[A-Za-z]+;)/g, '&amp;')
+    .replaceAll('@', '@\u200b')
+    .replace(/#(?=\d)/g, '#\u200b')
+    .replace(/(?<!redirect\\?\.)github\\?\.com/gi, 'redirect.github.com')
+    .replace(/(?<=\bgh\\?)-(?=\d)/gi, '-\u200b')
+    .replace(/(?<=\b(?:issues|pulls?|discussions)\\?\/)(?=\d)/g, '\u200b')
+    .replace(/\[quote/gi, '$&\u200b')
+    .replace(/username:/gi, 'username\u200b:');
 
 /** Forum post ids already mirrored, read from the bot's comments only. */
 export const mirroredPostIds = (comments) =>
@@ -156,7 +170,7 @@ const fit = (text, limit, note) => {
 
 export const pullRequestTopic = (pullRequest) => {
   const body = pullRequest.body
-    ? defuseMentions(stripMarkers(pullRequest.body))
+    ? defuseText(pullRequest.body)
     : '_No description provided._';
   const header = `Opened by ${pullRequest.user.login} on GitHub:\n\n${pullRequest.html_url}\n\n---\n\n`;
   return {
@@ -223,13 +237,18 @@ export const splitByActivity = (topics, cutoff) => {
 export const forumReplyBody = (comment) => {
   const header = `${comment.user.login} wrote on GitHub:\n\n`;
   const footer = `\n\n${comment.html_url}`;
-  const text = defuseMentions(stripMarkers(comment.body ?? ''));
+  const text = defuseText(comment.body ?? '');
   const room = FORUM_MAX_POST_CHARS - header.length - footer.length;
   return `${header}${fit(text, room, TRUNCATED_NOTE)}${footer}`;
 };
 
-export const githubCommentBody = (post, postUrl) =>
-  `${post.username} wrote on the forum:\n\n${defuseMentions(stripMarkers(post.raw ?? ''))}\n\n${postUrl}\n${markerOf(post.id)}`;
+export const githubCommentBody = (post, postUrl) => {
+  const header = `${defuseText(post.username ?? '')} wrote on the forum:\n\n`;
+  const footer = `\n\n${postUrl}\n${markerOf(post.id)}`;
+  const text = defuseText(post.raw ?? '');
+  const room = GITHUB_MAX_COMMENT_CHARS - Array.from(header + footer).length;
+  return `${header}${fit(text, room, GITHUB_TRUNCATED_NOTE)}${footer}`;
+};
 
 const required = (name) => {
   const value = process.env[name];
