@@ -27,7 +27,10 @@ const REGULAR_POST = 1;
 const LOOKBACK_HOURS = 48;
 /* A topic bumped before the last successful run started, less this margin for clock skew and slow runs, has nothing new. */
 const LAST_RUN_MARGIN_MS = 900_000;
-const WORKFLOW_FILE = /\/\.github\/workflows\/([^@/]+)@/;
+const WORKFLOW_ON_BRANCH = /\/\.github\/workflows\/([^@/]+)@refs\/heads\/(.+)$/;
+/* Successful runs checked for a job that ran; past these, the run falls back to the lookback window. */
+const RUN_PAGES = 3;
+const RUNS_PER_PAGE = 10;
 const MS_PER_HOUR = 3_600_000;
 const POSTS_PER_REQUEST = 100;
 const GITHUB_PAGE_SIZE = 100;
@@ -547,18 +550,42 @@ const github = () => {
       headers: { ...headers, 'Content-Type': 'application/json' },
       body: JSON.stringify({ body }),
     });
-  /* When this workflow last succeeded, from GITHUB_WORKFLOW_REF; null on the first run or without one. */
-  const lastSuccessfulRunStart = async () => {
-    const file = WORKFLOW_FILE.exec(process.env.GITHUB_WORKFLOW_REF ?? '')?.[1];
-    if (!file) return null;
-    const { workflow_runs: runs } = await (
-      await request(
-        `${api}/repos/${repo}/actions/workflows/${encodeURIComponent(file)}/runs?status=success&per_page=1&exclude_pull_requests=true`,
-        { headers },
-      )
-    ).json();
-    const started = Date.parse(runs?.[0]?.run_started_at ?? '');
-    return Number.isFinite(started) ? started : null;
+  const getJson = async (path) =>
+    (await request(`${api}${path}`, { headers })).json();
+  /**
+   * When this workflow last made a full pass on this branch: the newest successful run whose job ran,
+   * not one the `if:` skipped. Null on the first run; throws when that cannot be told.
+   */
+  const lastSuccessfulRunStart = async (now) => {
+    const ref = WORKFLOW_ON_BRANCH.exec(process.env.GITHUB_WORKFLOW_REF ?? '');
+    if (!ref)
+      throw new Error(
+        'GITHUB_WORKFLOW_REF does not name a workflow on a branch.',
+      );
+    const [, file, branch] = ref;
+    let sawRun = false;
+    for (let page = 1; page <= RUN_PAGES; page += 1) {
+      const { workflow_runs: runs = [] } = await getJson(
+        `/repos/${repo}/actions/workflows/${encodeURIComponent(file)}/runs?status=success&branch=${encodeURIComponent(branch)}&exclude_pull_requests=true&per_page=${RUNS_PER_PAGE}&page=${page}`,
+      );
+      for (const run of runs) {
+        sawRun = true;
+        const { jobs = [] } = await getJson(
+          `/repos/${repo}/actions/runs/${run.id}/jobs`,
+        );
+        if (!jobs.some(({ conclusion }) => conclusion === 'success')) continue;
+        const started = Date.parse(run.run_started_at ?? '');
+        if (!Number.isFinite(started) || started > now)
+          throw new Error(`run ${run.id} has no start time in the past.`);
+        return started;
+      }
+      if (runs.length < RUNS_PER_PAGE) break;
+    }
+    if (sawRun)
+      throw new Error(
+        `none of the newest ${RUN_PAGES * RUNS_PER_PAGE} successful runs ran its job.`,
+      );
+    return null;
   };
   return { api, comments, issue, comment, lastSuccessfulRunStart };
 };
@@ -638,13 +665,16 @@ const stopsTheRun = (error, githubApi) =>
     error.url !== undefined &&
     new URL(error.url).origin === new URL(githubApi).origin);
 
-/** The oldest bump worth reading: since the last successful run, less a margin, but never past the lookback window. */
+/** The oldest bump worth reading: since the last full pass, less a margin, within the lookback window and never later than now less the margin. */
 export const activityCutoff = (now, lastSuccessfulRunStart) =>
-  Math.max(
-    now - LOOKBACK_HOURS * MS_PER_HOUR,
-    lastSuccessfulRunStart === null
-      ? -Infinity
-      : lastSuccessfulRunStart - LAST_RUN_MARGIN_MS,
+  Math.min(
+    now - LAST_RUN_MARGIN_MS,
+    Math.max(
+      now - LOOKBACK_HOURS * MS_PER_HOUR,
+      lastSuccessfulRunStart === null
+        ? -Infinity
+        : lastSuccessfulRunStart - LAST_RUN_MARGIN_MS,
+    ),
   );
 
 const toGithub = async () => {
@@ -652,13 +682,14 @@ const toGithub = async () => {
   const apiUsername = required('DISCOURSE_API_USERNAME');
   const { base, get } = forum({ readGapMs: forumReadGapMs() });
   const gh = github();
-  const lastRun = await gh.lastSuccessfulRunStart().catch((error) => {
+  const now = Date.now();
+  const lastRun = await gh.lastSuccessfulRunStart(now).catch((error) => {
     console.log(
       `::warning::Could not read the last successful run, so this run reads ${LOOKBACK_HOURS} hours of topics: ${describe(error)}`,
     );
     return null;
   });
-  const cutoff = activityCutoff(Date.now(), lastRun);
+  const cutoff = activityCutoff(now, lastRun);
   let lastCommentAt = 0;
   /* Forum first: a topic with no reply from a person costs no GitHub request (1,000 an hour per repository). */
   const syncTopic = async (listed, target) => {

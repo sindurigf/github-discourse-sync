@@ -393,7 +393,7 @@ describe('to-github', () => {
     linkedTopic(42, 3, [personReply('Old')], { bumped_at: hoursAgo(3) });
     linkedIssue(4, 43);
     linkedTopic(43, 4, [personReply('New')], { bumped_at: hoursAgo(0.1) });
-    fake.successfulRuns.push({ run_started_at: hoursAgo(1) });
+    fake.addSuccessfulRun(hoursAgo(1));
     const run = await runMode('to-github', fake);
     assert.equal(run.code, 0, run.stderr);
     assert.deepEqual(copiedBodies(4), ['New']);
@@ -423,6 +423,73 @@ describe('to-github', () => {
     );
     assert.deepEqual(copiedBodies(3), ['Old']);
   });
+
+  for (const [name, setup] of [
+    [
+      'a successful run on another branch',
+      (f: FakeApis) => f.addSuccessfulRun(hoursAgo(1), { branch: 'feature' }),
+    ],
+    [
+      'a successful run whose job was skipped',
+      (f: FakeApis) =>
+        f.addSuccessfulRun(hoursAgo(1), { jobConclusion: 'skipped' }),
+    ],
+  ] as const)
+    test(`${name} does not move the cutoff`, async () => {
+      linkedIssue(3, 42);
+      linkedTopic(42, 3, [personReply('Old')], { bumped_at: hoursAgo(40) });
+      setup(fake);
+      const run = await runMode('to-github', fake);
+      assert.equal(run.code, 0, run.stderr);
+      assert.deepEqual(copiedBodies(3), ['Old']);
+    });
+
+  test('an older run whose job ran sets the cutoff when a newer one was skipped', async () => {
+    linkedIssue(3, 42);
+    linkedTopic(42, 3, [personReply('Between')], { bumped_at: hoursAgo(2) });
+    linkedIssue(4, 43);
+    linkedTopic(43, 4, [personReply('Older')], { bumped_at: hoursAgo(10) });
+    fake.addSuccessfulRun(hoursAgo(1), { jobConclusion: 'skipped' });
+    fake.addSuccessfulRun(hoursAgo(3));
+    const run = await runMode('to-github', fake);
+    assert.equal(run.code, 0, run.stderr);
+    assert.deepEqual(copiedBodies(3), ['Between']);
+    assert.ok(!fake.hits.some(({ url }) => url.startsWith('/t/43')));
+  });
+
+  for (const [name, setup, env] of [
+    [
+      'a last run that starts in the future',
+      (f: FakeApis) =>
+        f.addSuccessfulRun(new Date(Date.now() + 3_600_000).toISOString()),
+      {},
+    ],
+    [
+      'a tag workflow ref',
+      (f: FakeApis) => f.addSuccessfulRun(hoursAgo(1)),
+      {
+        GITHUB_WORKFLOW_REF:
+          'o/r/.github/workflows/discourse-topic-to-issue.yml@refs/tags/v1',
+      },
+    ],
+    [
+      'no workflow ref',
+      (f: FakeApis) => f.addSuccessfulRun(hoursAgo(1)),
+      { GITHUB_WORKFLOW_REF: '' },
+    ],
+  ] as [string, (f: FakeApis) => void, Record<string, string>][])
+    test(`${name} warns and reads the whole window`, async () => {
+      linkedIssue(3, 42);
+      linkedTopic(42, 3, [personReply('Old')], { bumped_at: hoursAgo(40) });
+      setup(fake);
+      const run = await runMode('to-github', fake, {}, env);
+      assert.equal(run.code, 0, run.stderr);
+      assert.match(
+        run.stdout,
+        /::warning::Could not read the last successful run/,
+      );
+      assert.deepEqual(copiedBodies(3), ['Old']);
+    });
 
   test('a forum rate limit within a minute is waited out, not reported', async () => {
     linkedIssue(3, 42);
@@ -550,6 +617,9 @@ describe('the activity cutoff', () => {
       activityCutoff(now, Date.parse('2026-11-05T11:45:00Z')),
       Date.parse('2026-11-05T11:30:00Z'),
     );
+  });
+  test('is never later than now less 15 minutes', () => {
+    assert.equal(activityCutoff(now, now + 3_600_000), now - 900_000);
   });
   test('is 48 hours back without a successful run or when that run is older', () => {
     const window = now - 48 * 3_600_000;

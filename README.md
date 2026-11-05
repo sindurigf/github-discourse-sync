@@ -36,8 +36,9 @@ How it behaves:
   answer. A reopen unaccepts only those close or merge replies.
 - Discourse cannot call GitHub, so `discourse-topic-to-issue.yml` checks the
   forum every 15 minutes. It reads only topics bumped since its last
-  successful run started, less 15 minutes, and never more than the last 48
-  hours. On the first run, or when no run has succeeded, it reads 48 hours.
+  successful run on the same branch started, less 15 minutes, and never more
+  than the last 48 hours. On the first run, or when that run cannot be found,
+  it reads 48 hours.
 - All runs for one issue or pull request wait in a single queue
   (`concurrency.queue: max`), so the topic is normally there before its
   comments, close or reopen arrive. GitHub's workflow syntax docs say queued
@@ -189,11 +190,14 @@ headers carry it.
 - The other workflows are not paced. A bulk action, such as closing 30 issues
   at once, starts that many runs in parallel and can pass the forum's limit,
   so some of them may fail and need a re-run.
-- Each topic read costs about 3.3 seconds with this pacing, so one run of
-  `discourse-topic-to-issue.yml` handles about 150 topics bumped since the last
-  successful run. With more, runs fail at their time limit and read the same
-  topics again until activity drops; replies older than 48 hours by then are
-  not copied.
+- Each topic read costs about 3.3 seconds with this pacing, and each copied
+  reply adds a second, so one run of `discourse-topic-to-issue.yml` handles up
+  to about 150 topics bumped since the last successful run. With more, runs
+  fail at their time limit and read the same topics again until activity
+  drops; replies older than 48 hours by then are not copied.
+- The cutoff moves only after a run on the same branch whose job ran and
+  succeeded. One topic that keeps failing makes every run fail, so the cutoff
+  stops moving and reads widen to 48 hours until that topic is fixed.
 - After a long pause, such as a forum outage, the backlog of replies can take
   several runs to copy, and those runs may fail until it catches up. Each run
   copies only replies not yet on GitHub, so none is copied twice.
