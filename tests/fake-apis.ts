@@ -80,6 +80,8 @@ export const startFakeApis = async (
   const hits: Hit[] = [];
   const faults: Fault[] = [];
   const settings = { solved: true };
+  /* Newest first, as the Actions API lists them. */
+  const successfulRuns: { run_started_at: string }[] = [];
   let nextId = 1000;
   let origin = '';
 
@@ -114,6 +116,19 @@ export const startFakeApis = async (
               repository_url: `${origin}/repos/o/elsewhere`,
             },
       };
+    if (
+      path === '/repos/o/r/actions/workflows/discourse-topic-to-issue.yml/runs'
+    ) {
+      if (query.get('status') !== 'success')
+        return {
+          status: 400,
+          body: { message: 'only successful runs are faked' },
+        };
+      return {
+        status: 200,
+        body: { workflow_runs: successfulRuns.slice(0, 1) },
+      };
+    }
     const issueMatch = /^\/repos\/o\/r\/issues\/(\d+)(\/comments)?$/.exec(path);
     if (!issueMatch) return { status: 500, body: { unexpected: path } };
     const issue = issues.get(Number(issueMatch[1]));
@@ -340,6 +355,7 @@ export const startFakeApis = async (
     topics,
     /** Solved off for the category: no post can be accepted. */
     settings,
+    successfulRuns,
     /** Answers the next `times` matching requests with `status` before the fake sees them. */
     fail: (fault: Fault) => faults.push(fault),
     addIssue: (issue: Omit<Issue, 'comments'> & { comments?: Comment[] }) => {
@@ -394,6 +410,7 @@ export const runMode = async (
           GITHUB_EVENT_PATH: eventPath,
           GITHUB_API_URL: fake.origin,
           GITHUB_REPOSITORY: REPOSITORY,
+          GITHUB_WORKFLOW_REF: `${REPOSITORY}/.github/workflows/discourse-topic-to-issue.yml@refs/heads/main`,
           GITHUB_TOKEN: 'gh-token',
           SYNC_FORUM_GAP_MS: '0',
           DISCOURSE_URL: fake.origin,
