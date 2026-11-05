@@ -114,6 +114,8 @@ gh secret set DISCOURSE_API_KEY
 gh secret set DISCOURSE_API_USERNAME
 ```
 
+`DISCOURSE_URL` must use https. Plain http works only for a forum on the same
+machine (`localhost`, `127.0.0.1` or `::1`), which the tests use.
 The sync user needs a username in plain ASCII, without spaces, because HTTP
 headers carry it.
 
