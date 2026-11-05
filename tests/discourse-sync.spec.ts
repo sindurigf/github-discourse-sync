@@ -833,6 +833,16 @@ test('a forum topic whose issue was deleted is skipped instead of failing the ru
           },
         },
       };
+    if (url === '/t/90.json')
+      return {
+        status: 200,
+        body: { id: 90, slug: 'deleted', post_stream: { stream: [1, 501] } },
+      };
+    if (url.startsWith('/t/90/posts.json'))
+      return {
+        status: 200,
+        body: { post_stream: { posts: [firstPost, reply] } },
+      };
     if (url === '/repos/o/r/issues/42')
       return { status: 410, body: { message: 'This issue was deleted' } };
     return { status: 500, body: { unexpected: url } };
@@ -857,8 +867,8 @@ test('a forum topic whose issue was deleted is skipped instead of failing the ru
     expect(stdout).toContain('Copied 0 forum replies to GitHub.');
     expect(
       fake.hits,
-      'a deleted issue has no comments or topic posts to read',
-    ).not.toContainEqual(expect.stringMatching(/comments|^\/t\//));
+      'a deleted issue has no comments to read',
+    ).not.toContainEqual(expect.stringMatching(/comments/));
   } finally {
     fake.server.close();
   }
@@ -1062,6 +1072,53 @@ test('a forum reply longer than a GitHub comment is shortened, keeping its link 
   }
 });
 
+test('one failing topic is reported while later topics still sync, and the run fails', async () => {
+  const fake = await fakeApi((method, url) => {
+    if (url.startsWith('/c/5/l/latest.json'))
+      return {
+        status: 200,
+        body: {
+          topic_list: { topics: [recentTopic(90, 4), recentTopic(91, 3)] },
+        },
+      };
+    if (url === '/t/90.json') return { status: 403, body: { errors: ['no'] } };
+    if (url === '/t/91.json')
+      return {
+        status: 200,
+        body: { id: 91, slug: 'crash', post_stream: { stream: [1, 501] } },
+      };
+    if (url.startsWith('/t/91/posts.json'))
+      return {
+        status: 200,
+        body: { post_stream: { posts: [firstPost, reply] } },
+      };
+    if (url === '/repos/o/r/issues/3')
+      return {
+        status: 200,
+        body: { number: 3, repository_url: `${fake.origin}/repos/o/r` },
+      };
+    if (url.startsWith('/repos/o/r/issues/3/comments'))
+      return method === 'POST'
+        ? { status: 201 }
+        : { status: 200, body: [topicLink(91)] };
+    return { status: 500, body: { unexpected: url } };
+  });
+  try {
+    const run = await runMode('to-github', fake.origin);
+    expect(run.code, 'a failed topic must fail the run').not.toBe(0);
+    expect(run.stderr).toContain('topic 90');
+    expect(
+      fake.hits.filter(
+        ({ method, url }) =>
+          method === 'POST' && url.startsWith('/repos/o/r/issues/3/comments'),
+      ),
+      'topic 91 still syncs after topic 90 fails',
+    ).toHaveLength(1);
+  } finally {
+    fake.server.close();
+  }
+});
+
 test('a GET retries a 5xx answer and a dropped connection, a POST does not', async () => {
   let calls = 0;
   const fake = await fakeApi((method, url) => {
@@ -1167,6 +1224,49 @@ test('discourse-comment-to-topic.yml skips comments from bots', () => {
   expect(job.if).toContain("github.event.comment.user.type != 'Bot'");
 });
 
+test('a topic with no reply from a person costs no GitHub request', async () => {
+  const fake = await fakeApi((method, url) => {
+    if (url.startsWith('/c/5/l/latest.json'))
+      return {
+        status: 200,
+        body: { topic_list: { topics: [recentTopic(91, 3)] } },
+      };
+    if (url === '/t/91.json')
+      return {
+        status: 200,
+        body: { id: 91, slug: 'crash', post_stream: { stream: [1, 2] } },
+      };
+    if (url.startsWith('/t/91/posts.json'))
+      return {
+        status: 200,
+        body: {
+          post_stream: {
+            posts: [
+              firstPost,
+              {
+                id: 2,
+                post_number: 2,
+                post_type: 1,
+                username: API_USER,
+                raw: forumReplyBody(human),
+              },
+            ],
+          },
+        },
+      };
+    return { status: 500, body: { unexpected: `${method} ${url}` } };
+  });
+  try {
+    const run = await runMode('to-github', fake.origin);
+    expect(run.code).toBe(0);
+    expect(fake.hits.filter(({ url }) => url.startsWith('/repos/'))).toEqual(
+      [],
+    );
+  } finally {
+    fake.server.close();
+  }
+});
+
 const openedIssue = {
   issue: {
     number: 3,
@@ -1219,6 +1319,157 @@ test('a person quoting the comment link in the topic does not stop the comment',
     fake.server.close();
   }
 });
+
+test('a topic the forum keeps failing is skipped while later topics sync, and the run fails', async () => {
+  const fake = await fakeApi((method, url) => {
+    if (url.startsWith('/c/5/l/latest.json'))
+      return {
+        status: 200,
+        body: {
+          topic_list: { topics: [recentTopic(90, 4), recentTopic(91, 3)] },
+        },
+      };
+    if (url === '/t/90.json')
+      return { status: 503, headers: { 'retry-after': '1' } };
+    if (url === '/t/91.json')
+      return {
+        status: 200,
+        body: { id: 91, slug: 'crash', post_stream: { stream: [1, 501] } },
+      };
+    if (url.startsWith('/t/91/posts.json'))
+      return {
+        status: 200,
+        body: { post_stream: { posts: [firstPost, reply] } },
+      };
+    if (url === '/repos/o/r/issues/3')
+      return {
+        status: 200,
+        body: { number: 3, repository_url: `${fake.origin}/repos/o/r` },
+      };
+    if (url.startsWith('/repos/o/r/issues/3/comments'))
+      return method === 'POST'
+        ? { status: 201 }
+        : { status: 200, body: [topicLink(91)] };
+    return { status: 500, body: { unexpected: `${method} ${url}` } };
+  });
+  try {
+    const run = await runMode('to-github', fake.origin);
+    expect(run.code).not.toBe(0);
+    expect(run.stderr).toContain('Could not sync topic 90');
+    expect(run.stderr).not.toContain('Stopped before');
+    expect(
+      fake.hits.filter(
+        ({ method, url }) =>
+          method === 'POST' && url.startsWith('/repos/o/r/issues/3/comments'),
+      ),
+    ).toHaveLength(1);
+  } finally {
+    fake.server.close();
+  }
+});
+
+test('a failing topic reports the cause of a network error', async () => {
+  const fake = await fakeApi((method, url) => {
+    if (url.startsWith('/c/5/l/latest.json'))
+      return {
+        status: 200,
+        body: { topic_list: { topics: [recentTopic(91, 3)] } },
+      };
+    if (url === '/t/91.json')
+      return {
+        status: 200,
+        body: { id: 91, slug: 'crash', post_stream: { stream: [1, 501] } },
+      };
+    if (url.startsWith('/t/91/posts.json'))
+      return {
+        status: 200,
+        body: { post_stream: { posts: [firstPost, reply] } },
+      };
+    if (url === '/repos/o/r/issues/3')
+      return {
+        status: 200,
+        body: { number: 3, repository_url: `${fake.origin}/repos/o/r` },
+      };
+    if (url.startsWith('/repos/o/r/issues/3/comments'))
+      return method === 'POST'
+        ? 'drop'
+        : { status: 200, body: [topicLink(91)] };
+    return { status: 500, body: { unexpected: `${method} ${url}` } };
+  });
+  try {
+    const run = await runMode('to-github', fake.origin);
+    expect(run.code).not.toBe(0);
+    expect(run.stderr).toMatch(/Could not sync topic 91: fetch failed \(.+\)/);
+  } finally {
+    fake.server.close();
+  }
+});
+
+for (const [name, headers, stops] of [
+  [
+    '403 for a secondary rate limit (Retry-After) stops the run',
+    { 'retry-after': '60' },
+    true,
+  ],
+  [
+    '403 for a primary rate limit (no requests left) stops the run',
+    { 'x-ratelimit-remaining': '0' },
+    true,
+  ],
+  [
+    '403 that is not a rate limit skips one topic',
+    { 'x-ratelimit-remaining': '4999' },
+    false,
+  ],
+] as [string, Record<string, string>, boolean][])
+  test(`in to-github, GitHub's ${name}`, async () => {
+    const fake = await fakeApi((method, url) => {
+      if (url.startsWith('/c/5/l/latest.json'))
+        return {
+          status: 200,
+          body: {
+            topic_list: { topics: [recentTopic(91, 3), recentTopic(92, 4)] },
+          },
+        };
+      const topic = /^\/t\/(9[12])(?:\.json|\/posts\.json)/.exec(url)?.[1];
+      if (topic && url.endsWith('.json'))
+        return {
+          status: 200,
+          body: {
+            id: Number(topic),
+            slug: 'crash',
+            post_stream: { stream: [1, 501] },
+          },
+        };
+      if (topic)
+        return {
+          status: 200,
+          body: { post_stream: { posts: [firstPost, reply] } },
+        };
+      if (url === '/repos/o/r/issues/3')
+        return { status: 403, headers, body: { message: 'Forbidden' } };
+      if (url === '/repos/o/r/issues/4')
+        return {
+          status: 200,
+          body: { number: 4, repository_url: `${fake.origin}/repos/o/r` },
+        };
+      if (url.startsWith('/repos/o/r/issues/4/comments'))
+        return method === 'POST'
+          ? { status: 201 }
+          : { status: 200, body: [topicLink(92)] };
+      return { status: 500, body: { unexpected: `${method} ${url}` } };
+    });
+    try {
+      const run = await runMode('to-github', fake.origin);
+      expect(run.code).not.toBe(0);
+      expect(run.stderr.includes('Stopped before 1 more topic')).toBe(stops);
+      expect(fake.hits.some(({ url }) => url === '/repos/o/r/issues/4')).toBe(
+        !stops,
+      );
+    } finally {
+      fake.server.close();
+    }
+  });
 
 test('a request GitHub or Discourse never received, such as a bad header, is not retried', async () => {
   const started = performance.now();
@@ -1519,6 +1770,66 @@ test('a forum username that reads as a reference is defused in the GitHub commen
   expect(body.startsWith(`gh-${ZWSP}12 wrote on the forum:`)).toBe(true);
 });
 
+for (const [name, status, headers, message] of [
+  [
+    'a 403 with only a rate limit message',
+    403,
+    {},
+    'You have exceeded a secondary rate limit.',
+  ],
+  ['a 429 without Retry-After', 429, {}, 'Too many requests'],
+  [
+    'a 429 with a Retry-After above the cap',
+    429,
+    { 'retry-after': '120' },
+    'Too many requests',
+  ],
+] as [string, number, Record<string, string>, string][])
+  test(`in to-github, ${name} from GitHub stops the run`, async () => {
+    const fake = await fakeApi((method, url) => {
+      if (url.startsWith('/c/5/l/latest.json'))
+        return {
+          status: 200,
+          body: {
+            topic_list: { topics: [recentTopic(91, 3), recentTopic(92, 4)] },
+          },
+        };
+      const topic = /^\/t\/(9[12])(?:\.json|\/posts\.json)/.exec(url)?.[1];
+      if (topic && url.endsWith('.json'))
+        return {
+          status: 200,
+          body: {
+            id: Number(topic),
+            slug: 'crash',
+            post_stream: { stream: [1, 501] },
+          },
+        };
+      if (topic)
+        return {
+          status: 200,
+          body: { post_stream: { posts: [firstPost, reply] } },
+        };
+      if (url === '/repos/o/r/issues/3')
+        return { status, headers, body: { message } };
+      return { status: 500, body: { unexpected: `${method} ${url}` } };
+    });
+    try {
+      const started = performance.now();
+      const run = await runMode('to-github', fake.origin);
+      expect(run.code).not.toBe(0);
+      expect(run.stderr).toMatch(/Stopped before 1 more topic/);
+      expect(
+        fake.hits.filter(({ url }) => url === '/repos/o/r/issues/3'),
+      ).toHaveLength(1);
+      expect(
+        performance.now() - started,
+        'the run waited on a rate limit',
+      ).toBeLessThan(10_000);
+    } finally {
+      fake.server.close();
+    }
+  });
+
 test('a POST is not retried sooner than its Retry-After', async () => {
   const fake = await fakeApi(() => ({
     status: 429,
@@ -1530,6 +1841,55 @@ test('a POST is not retried sooner than its Retry-After', async () => {
       request(`${fake.origin}/posts.json`, { method: 'POST', body: '{}' }),
     ).rejects.toThrow(/answered 429/);
     expect(fake.hits).toHaveLength(1);
+  } finally {
+    fake.server.close();
+  }
+});
+
+test('in to-github, a GitHub rate limit after a redirect still stops the run', async () => {
+  const fake = await fakeApi((method, url) => {
+    if (url.startsWith('/c/5/l/latest.json'))
+      return {
+        status: 200,
+        body: {
+          topic_list: { topics: [recentTopic(91, 3), recentTopic(92, 4)] },
+        },
+      };
+    const topic = /^\/t\/(9[12])(?:\.json|\/posts\.json)/.exec(url)?.[1];
+    if (topic && url.endsWith('.json'))
+      return {
+        status: 200,
+        body: {
+          id: Number(topic),
+          slug: 'crash',
+          post_stream: { stream: [1, 501] },
+        },
+      };
+    if (topic)
+      return {
+        status: 200,
+        body: { post_stream: { posts: [firstPost, reply] } },
+      };
+    if (url === '/repos/o/r/issues/3')
+      return {
+        status: 301,
+        headers: { location: '/repositories/7/issues/3' } as Record<
+          string,
+          string
+        >,
+      };
+    if (url === '/repositories/7/issues/3')
+      return {
+        status: 403,
+        headers: { 'retry-after': '60' },
+        body: { message: 'Forbidden' },
+      };
+    return { status: 500, body: { unexpected: `${method} ${url}` } };
+  });
+  try {
+    const run = await runMode('to-github', fake.origin);
+    expect(run.code).not.toBe(0);
+    expect(run.stderr).toMatch(/Stopped before 1 more topic/);
   } finally {
     fake.server.close();
   }
@@ -1602,6 +1962,79 @@ for (const [name, env, message] of [
       fake.server.close();
     }
   });
+
+test('to-github waits a second between comments it posts', async () => {
+  const second = { ...reply, id: 502, post_number: 3, raw: 'Me too.' };
+  const fake = await fakeApi((method, url) => {
+    if (url.startsWith('/c/5/l/latest.json'))
+      return {
+        status: 200,
+        body: { topic_list: { topics: [recentTopic(91, 3)] } },
+      };
+    if (url === '/t/91.json')
+      return {
+        status: 200,
+        body: { id: 91, slug: 'crash', post_stream: { stream: [1, 501, 502] } },
+      };
+    if (url.startsWith('/t/91/posts.json'))
+      return {
+        status: 200,
+        body: { post_stream: { posts: [firstPost, reply, second] } },
+      };
+    if (url === '/repos/o/r/issues/3')
+      return {
+        status: 200,
+        body: { number: 3, repository_url: `${fake.origin}/repos/o/r` },
+      };
+    if (url.startsWith('/repos/o/r/issues/3/comments'))
+      return method === 'POST'
+        ? { status: 201 }
+        : { status: 200, body: [topicLink(91)] };
+    return { status: 500, body: { unexpected: `${method} ${url}` } };
+  });
+  try {
+    const run = await runMode('to-github', fake.origin);
+    expect(run.code, run.stderr).toBe(0);
+    const posts = fake.hits.filter(({ method }) => method === 'POST');
+    expect(posts).toHaveLength(2);
+    expect(posts[1]!.at! - posts[0]!.at!).toBeGreaterThanOrEqual(1_000);
+  } finally {
+    fake.server.close();
+  }
+});
+
+test('a forum rate limit stops the to-github run', async () => {
+  const fake = await fakeApi((method, url) => {
+    if (url.startsWith('/c/5/l/latest.json'))
+      return {
+        status: 200,
+        body: {
+          topic_list: { topics: [recentTopic(90, 4), recentTopic(91, 3)] },
+        },
+      };
+    if (url === '/t/90.json')
+      return { status: 429, body: { errors: ['slow down'] } };
+    return { status: 500, body: { unexpected: `${method} ${url}` } };
+  });
+  const github = await fakeApi(() => ({
+    status: 500,
+    body: { unexpected: true },
+  }));
+  try {
+    const run = await runMode(
+      'to-github',
+      fake.origin,
+      {},
+      { GITHUB_API_URL: github.origin },
+    );
+    expect(run.code).not.toBe(0);
+    expect(run.stderr).toMatch(/Stopped before 1 more topic/);
+    expect(fake.hits.some(({ url }) => url.startsWith('/t/91'))).toBe(false);
+  } finally {
+    fake.server.close();
+    github.server.close();
+  }
+});
 
 test('the link comment text in issue-to-discourse.yml matches the script', () => {
   const workflow = readFileSync(
