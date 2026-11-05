@@ -1859,6 +1859,17 @@ test('no adversarial input keeps a mention, reference, entity, GitHub link or ma
   }
 });
 
+test('copied text is defused in linear time, nested markers included', () => {
+  const nested = (n: number) =>
+    '<!-- discourse-post:'.repeat(n) + '1 -->' + '7 -->'.repeat(n);
+  const mixed = (n: number) => 'a/@#1&#64;github.com '.repeat(n);
+  for (const make of [nested, mixed])
+    expect(
+      costOverOnePass(make(20_000)),
+      'defusing is not linear',
+    ).toBeLessThan(300);
+});
+
 test('a mode name inherited from Object, such as constructor, is refused', async () => {
   const run = await runMode('constructor', 'http://127.0.0.1:9');
   expect(run.code).not.toBe(0);
