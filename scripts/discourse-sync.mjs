@@ -500,6 +500,10 @@ const github = () => {
       url = /<([^>]+)>;\s*rel="next"/.exec(
         response.headers.get('link') ?? '',
       )?.[1];
+      if (url && new URL(url).origin !== new URL(api).origin)
+        throw new Error(
+          `GitHub's next page for #${issue} is on another host; not followed, so the token stays on GitHub.`,
+        );
     }
     return all;
   };

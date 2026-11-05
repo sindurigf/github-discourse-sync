@@ -2128,6 +2128,31 @@ for (const [name, env, message] of [
     }
   });
 
+test('a GitHub next-page link to another host is not followed, so the token stays on GitHub', async () => {
+  const other = await fakeApi(() => ({ status: 200, body: [] }));
+  const fake = await fakeApi((method, url) =>
+    url.startsWith('/repos/o/r/issues/3/comments')
+      ? {
+          status: 200,
+          body: [],
+          headers: { link: `<${other.origin}/steal?page=2>; rel="next"` },
+        }
+      : { status: 500, body: { unexpected: `${method} ${url}` } },
+  );
+  try {
+    const run = await runMode('to-forum', fake.origin, {
+      comment: human,
+      issue: { number: 3 },
+    });
+    expect(run.code).not.toBe(0);
+    expect(run.stderr).toContain('not followed');
+    expect(other.hits, 'the other host saw the token').toEqual([]);
+  } finally {
+    fake.server.close();
+    other.server.close();
+  }
+});
+
 test('to-github waits a second between comments it posts', async () => {
   const second = { ...reply, id: 502, post_number: 3, raw: 'Me too.' };
   const fake = await fakeApi((method, url) => {
