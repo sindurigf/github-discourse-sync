@@ -173,6 +173,20 @@ gh secret set DISCOURSE_API_USERNAME
   active again.
 - One issue or pull request can have up to 100 runs waiting, which is GitHub's
   limit. A run beyond that is canceled and not retried.
+- Discourse allows 60 admin API requests a minute for the whole site by
+  default, shared by every key and staff included
+  (`DISCOURSE_MAX_ADMIN_API_REQS_PER_MINUTE`). `discourse-topic-to-issue.yml`
+  waits 1.5 seconds between forum requests, about 40 a minute, to leave room
+  for the other workflows. A forum request that hits the limit waits up to a
+  minute, as Discourse asks, within the run's time limit; a run that still
+  cannot finish fails and its event can be run again.
+- The other workflows are not paced. A bulk action, such as closing 30 issues
+  at once, starts that many runs in parallel and can pass the forum's limit,
+  so some of them may fail and need a re-run.
+- After a long pause, such as a forum outage, the backlog of replies can take
+  several runs of `discourse-topic-to-issue.yml` to copy, and those runs may
+  fail until it catches up. Each run copies only replies not yet on GitHub, so
+  none is copied twice.
 
 ## Security
 

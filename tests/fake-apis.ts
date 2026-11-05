@@ -395,6 +395,7 @@ export const runMode = async (
           GITHUB_API_URL: fake.origin,
           GITHUB_REPOSITORY: REPOSITORY,
           GITHUB_TOKEN: 'gh-token',
+          SYNC_FORUM_GAP_MS: '0',
           DISCOURSE_URL: fake.origin,
           DISCOURSE_CATEGORY_ID: String(CATEGORY_ID),
           DISCOURSE_API_KEY: API_KEY,

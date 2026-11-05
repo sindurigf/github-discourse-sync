@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, describe, test } from 'node:test';
 import {
+  FORUM_READ_GAP_MS,
   LINK_COMMENT_PREFIX,
   markerOf,
   splitByActivity,
@@ -358,12 +359,16 @@ describe('to-github', () => {
     );
   });
 
-  test('a forum rate limit stops the run', async () => {
+  test('a forum rate limit longer than a minute stops the run', async () => {
     const github = await startFakeApis();
     try {
       linkedTopic(42, 3, [personReply('Lost')], { bumped_at: hoursAgo(1) });
       linkedTopic(43, 4, [personReply('Kept')], { bumped_at: hoursAgo(2) });
-      fake.fail({ path: '/t/42.json', status: 429 });
+      fake.fail({
+        path: '/t/42.json',
+        status: 429,
+        headers: { 'retry-after': '120' },
+      });
       const run = await runMode(
         'to-github',
         fake,
@@ -376,6 +381,58 @@ describe('to-github', () => {
     } finally {
       await github.close();
     }
+  });
+
+  test('a forum rate limit within a minute is waited out, not reported', async () => {
+    linkedIssue(3, 42);
+    linkedTopic(42, 3, [personReply('First')]);
+    fake.fail({
+      path: '/t/42.json',
+      status: 429,
+      headers: { 'retry-after': '1' },
+    });
+    const run = await runMode('to-github', fake);
+    assert.equal(run.code, 0, run.stderr);
+    assert.deepEqual(copiedBodies(3), ['First']);
+  });
+
+  test('a forum rate limit without Retry-After is retried, not reported', async () => {
+    linkedIssue(3, 42);
+    linkedTopic(42, 3, [personReply('First')]);
+    fake.fail({ path: '/t/42.json', status: 429 });
+    const run = await runMode('to-github', fake);
+    assert.equal(run.code, 0, run.stderr);
+    assert.deepEqual(copiedBodies(3), ['First']);
+  });
+
+  test('a read gap above a minute is refused', async () => {
+    const run = await runMode(
+      'to-github',
+      fake,
+      {},
+      { SYNC_FORUM_GAP_MS: '2147483648' },
+    );
+    assert.notEqual(run.code, 0);
+    assert.match(run.stderr, /SYNC_FORUM_GAP_MS/);
+  });
+
+  test('forum reads are spaced by the read gap', async () => {
+    linkedTopic(42, 3, []);
+    linkedTopic(43, 4, []);
+    const run = await runMode(
+      'to-github',
+      fake,
+      {},
+      { SYNC_FORUM_GAP_MS: '300' },
+    );
+    assert.equal(run.code, 0, run.stderr);
+    const reads = fake.hits.filter(({ url }) => !url.startsWith('/repos/'));
+    assert.ok(reads.length >= 5);
+    for (const [i, hit] of reads.slice(1).entries())
+      assert.ok(
+        hit.at - reads[i]!.at >= 290,
+        `forum requests ${i} and ${i + 1} were not spaced`,
+      );
   });
 
   test('a failing topic prints the cause of a network error', async () => {
@@ -434,5 +491,12 @@ describe('the latest list', () => {
       splitByActivity([{ id: 3, bumped_at: old }], cutoff).older,
       true,
     );
+  });
+});
+
+/* Function: Discourse allows 60 admin API requests a minute for the whole site by default. */
+describe('forum pacing', () => {
+  test('to-github reads the forum at no more than 40 requests a minute, leaving room for event runs', () => {
+    assert.ok(60_000 / FORUM_READ_GAP_MS <= 40);
   });
 });

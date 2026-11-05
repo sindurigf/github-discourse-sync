@@ -199,6 +199,21 @@ describe('to-forum', () => {
       assert.deepEqual(fake.hits, []);
     });
 
+  test('a forum rate limit of up to a minute is waited out, not reported, until the deadline', async () => {
+    fake.fail({
+      path: '/t/42.json',
+      status: 429,
+      headers: { 'retry-after': '45' },
+      times: 10,
+    });
+    const run = await runMode('to-forum', fake, event(), {
+      SYNC_DEADLINE_MS: '1500',
+    });
+    assert.notEqual(run.code, 0);
+    assert.match(run.stderr, /run deadline/);
+    assert.doesNotMatch(run.stderr, /answered 429/);
+  });
+
   test('an issue with no topic is skipped', async () => {
     fake.issues.get(3)!.comments.pop();
     const run = await runMode('to-forum', fake, event());

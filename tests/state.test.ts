@@ -330,6 +330,21 @@ describe('state', () => {
     assert.equal(topic.closed, true);
   });
 
+  test('a forum rate limit of up to a minute is waited out, not reported, until the deadline', async () => {
+    fake.fail({
+      path: '/t/42/status.json',
+      status: 429,
+      headers: { 'retry-after': '45' },
+      times: 10,
+    });
+    const run = await runMode('state', fake, issueEvent('closed'), {
+      SYNC_DEADLINE_MS: '1500',
+    });
+    assert.notEqual(run.code, 0);
+    assert.match(run.stderr, /run deadline/);
+    assert.doesNotMatch(run.stderr, /answered 429/);
+  });
+
   test('an issue with no topic is skipped', async () => {
     fake.issues.get(3)!.comments.length = 0;
     const run = await runMode('state', fake, issueEvent('closed'));
