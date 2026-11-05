@@ -25,7 +25,19 @@ export type Issue = {
   pullRequest?: boolean;
   deleted?: boolean;
   transferred?: boolean;
+  /* A pull request opened from a fork. */
+  fork?: boolean;
+  updated_at?: string;
+  reviews?: Review[];
   comments: Comment[];
+};
+export type Review = {
+  id: number;
+  user: { login: string; type: string };
+  state: string;
+  body: string | null;
+  submitted_at: string;
+  html_url: string;
 };
 export type Post = {
   id: number;
@@ -80,7 +92,7 @@ export const startFakeApis = async (
   const hits: Hit[] = [];
   const faults: Fault[] = [];
   const settings = { solved: true };
-  /* Newest first, as the Actions API lists them. */
+  /* Listed newest first by start time, as the Actions API lists them. */
   const successfulRuns: {
     id: number;
     run_started_at: string;
@@ -130,9 +142,11 @@ export const startFakeApis = async (
           body: { message: 'only successful runs are faked' },
         };
       const branch = query.get('branch');
-      const runs = successfulRuns.filter(
-        (run) => branch === null || run.head_branch === branch,
-      );
+      const runs = successfulRuns
+        .filter((run) => branch === null || run.head_branch === branch)
+        .sort(
+          (a, b) => Date.parse(b.run_started_at) - Date.parse(a.run_started_at),
+        );
       const page = Number(query.get('page') ?? '1');
       const size = Number(query.get('per_page') ?? '30');
       return {
@@ -151,6 +165,36 @@ export const startFakeApis = async (
         ? { status: 200, body: { jobs: run.jobs } }
         : { status: 404, body: { message: 'Not Found' } };
     }
+    if (path === '/repos/o/r/pulls' && method === 'GET') {
+      /* Like GitHub: sort=created (number order here) unless sort=updated, newest first unless direction=asc. */
+      const byUpdated = query.get('sort') === 'updated';
+      const sign = query.get('direction') === 'asc' ? -1 : 1;
+      const pulls = [...issues.values()]
+        .filter((issue) => issue.pullRequest)
+        .sort(
+          (a, b) =>
+            sign *
+            (byUpdated
+              ? Date.parse(b.updated_at ?? '') - Date.parse(a.updated_at ?? '')
+              : b.number - a.number),
+        );
+      const page = Number(query.get('page') ?? '1');
+      const size = Number(query.get('per_page') ?? '30');
+      return {
+        status: 200,
+        body: pulls.slice((page - 1) * size, page * size).map((pull) => ({
+          number: pull.number,
+          updated_at: pull.updated_at ?? new Date().toISOString(),
+          head: { repo: { fork: Boolean(pull.fork) } },
+        })),
+      };
+    }
+    const pullReviews = /^\/repos\/o\/r\/pulls\/(\d+)\/reviews$/.exec(path);
+    if (pullReviews && method === 'GET')
+      return {
+        status: 200,
+        body: issues.get(Number(pullReviews[1]))?.reviews ?? [],
+      };
     const issueMatch = /^\/repos\/o\/r\/issues\/(\d+)(\/comments)?$/.exec(path);
     if (!issueMatch) return { status: 500, body: { unexpected: path } };
     const issue = issues.get(Number(issueMatch[1]));

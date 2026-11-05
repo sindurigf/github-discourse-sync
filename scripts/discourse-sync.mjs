@@ -16,10 +16,11 @@ export const PR_LINK_COMMENT_PREFIX =
   'Discussion for this pull request is open on the forum: ';
 const LINK_PREFIXES = [LINK_COMMENT_PREFIX, PR_LINK_COMMENT_PREFIX];
 export const BOT_LOGIN = 'github-actions[bot]';
-const GITHUB_HEADER = /^\S+ wrote on GitHub:\n/;
+const GITHUB_HEADER =
+  /^\S+ (?:wrote|approved|requested changes|commented) on GitHub[:.]/;
 /* The link back, inline or, from earlier versions, alone on the last line. */
 const GITHUB_COMMENT_FOOTER =
-  /\n(?:\[View on GitHub\]\(\S+#issuecomment-\d+\)|\S+#issuecomment-\d+)$/;
+  /\n(?:\[View on GitHub\]\(\S+#(?:issuecomment|pullrequestreview)-\d+\)|\S+#issuecomment-\d+)$/;
 const MARKER = /<!-- discourse-post:(\d+) -->/g;
 const TOPIC_TITLE = /^GitHub (issue|pull request) #(\d+):/;
 const TOPIC_URL = /\/t\/[^/\s]+\/(\d+)\b/;
@@ -32,6 +33,8 @@ const LAST_RUN_MARGIN_MS = 900_000;
 const WORKFLOW_ON_BRANCH = /\/\.github\/workflows\/([^@/]+)@refs\/heads\/(.+)$/;
 /* Successful runs checked for a job that ran; past these, the run falls back to the lookback window. */
 const RUN_PAGES = 3;
+/* Pages of recently updated pull requests read for new reviews per run. */
+const PULL_PAGES = 3;
 const RUNS_PER_PAGE = 10;
 const MS_PER_HOUR = 3_600_000;
 const POSTS_PER_REQUEST = 100;
@@ -269,6 +272,32 @@ export const forumReplyBody = (comment) => {
   const header = `${comment.user.login} wrote on GitHub:\n\n`;
   const footer = `\n\n${viewOnGithub(comment.html_url)}`;
   const text = defuseText(comment.body ?? '');
+  const room = FORUM_MAX_POST_CHARS - header.length - footer.length;
+  return `${header}${fit(text, room, TRUNCATED_NOTE)}${footer}`;
+};
+
+const REVIEW_VERBS = {
+  APPROVED: 'approved',
+  CHANGES_REQUESTED: 'requested changes',
+  COMMENTED: 'commented',
+};
+
+/** A submitted review summary: its state, its body when it has one, and its link. Code line comments stay on GitHub. */
+export const shouldCopyReview = (review, cutoff) =>
+  Object.hasOwn(REVIEW_VERBS, review.state) &&
+  /* A deleted account leaves the review without a user. */
+  Boolean(review.user?.login) &&
+  review.user.type !== 'Bot' &&
+  /* A Commented review with no body holds only code line comments. */
+  !(review.state === 'COMMENTED' && !(review.body ?? '').trim()) &&
+  Date.parse(review.submitted_at ?? '') >= cutoff;
+
+export const reviewReplyBody = (review) => {
+  const lead = `${review.user.login} ${REVIEW_VERBS[review.state]} on GitHub`;
+  const footer = `\n\n${viewOnGithub(review.html_url)}`;
+  const text = defuseText((review.body ?? '').trim());
+  if (!text) return `${lead}.${footer}`;
+  const header = `${lead}:\n\n`;
   const room = FORUM_MAX_POST_CHARS - header.length - footer.length;
   return `${header}${fit(text, room, TRUNCATED_NOTE)}${footer}`;
 };
@@ -526,9 +555,10 @@ const github = () => {
     Accept: 'application/vnd.github+json',
     'X-GitHub-Api-Version': '2022-11-28',
   };
-  const comments = async (issue) => {
+  /* Every page of a list; Link pages are followed only on the API host, so the token stays on GitHub. */
+  const allPages = async (path, label) => {
     const all = [];
-    let url = `${api}/repos/${repo}/issues/${issue}/comments?per_page=${GITHUB_PAGE_SIZE}`;
+    let url = `${api}${path}`;
     while (url) {
       const response = await request(url, { headers });
       all.push(...(await response.json()));
@@ -537,10 +567,42 @@ const github = () => {
       )?.[1];
       if (url && new URL(url).origin !== new URL(api).origin)
         throw new Error(
-          `GitHub's next page for #${issue} is on another host; not followed, so the token stays on GitHub.`,
+          `GitHub's next page for ${label} is on another host; not followed, so the token stays on GitHub.`,
         );
     }
     return all;
+  };
+  const comments = (issue) =>
+    allPages(
+      `/repos/${repo}/issues/${issue}/comments?per_page=${GITHUB_PAGE_SIZE}`,
+      `#${issue}`,
+    );
+  const reviews = (number) =>
+    allPages(
+      `/repos/${repo}/pulls/${number}/reviews?per_page=${GITHUB_PAGE_SIZE}`,
+      `#${number}`,
+    );
+  /** Pull requests updated since `cutoff`, newest first, from at most a few pages. */
+  const updatedPullRequests = async (cutoff) => {
+    const found = [];
+    for (let page = 1; page <= PULL_PAGES; page += 1) {
+      const pulls = await (
+        await request(
+          `${api}/repos/${repo}/pulls?state=all&sort=updated&direction=desc&per_page=${GITHUB_PAGE_SIZE}&page=${page}`,
+          { headers },
+        )
+      ).json();
+      const recent = pulls.filter(
+        ({ updated_at }) => Date.parse(updated_at) >= cutoff,
+      );
+      found.push(...recent);
+      if (recent.length < pulls.length || pulls.length < GITHUB_PAGE_SIZE)
+        return found;
+    }
+    console.log(
+      `::warning::More than ${PULL_PAGES * GITHUB_PAGE_SIZE} pull requests were updated since the cutoff; the older ones are not read for reviews.`,
+    );
+    return found;
   };
   /* A transferred issue redirects to its new repository; it is not ours to comment on. */
   const issue = async (number) => {
@@ -592,7 +654,26 @@ const github = () => {
       );
     return null;
   };
-  return { api, comments, issue, comment, lastSuccessfulRunStart };
+  return {
+    api,
+    comments,
+    reviews,
+    updatedPullRequests,
+    issue,
+    comment,
+    lastSuccessfulRunStart,
+  };
+};
+
+/** Whether the API user already copied the GitHub item at `url` into these posts, in either link format. */
+const alreadyOnForum = (posts, url, apiUsername) => {
+  const footers = [viewOnGithub(url), url].map((link) => `\n\n${link}`);
+  return posts.some(
+    ({ username, raw }) =>
+      username?.toLowerCase() === apiUsername.toLowerCase() &&
+      isGithubMirror(raw) &&
+      footers.some((footer) => (raw ?? '').trimEnd().endsWith(footer)),
+  );
 };
 
 const toForum = async () => {
@@ -606,15 +687,9 @@ const toForum = async () => {
     return console.log(`#${issue.number} has no forum topic; skipped.`);
   const { get, post } = forum();
   const { posts } = await topicPosts(get, topicId);
-  const apiUsername = required('DISCOURSE_API_USERNAME').toLowerCase();
-  const footers = [viewOnGithub(comment.html_url), comment.html_url].map(
-    (link) => `\n\n${link}`,
-  );
-  const copied = ({ username, raw }) =>
-    username?.toLowerCase() === apiUsername &&
-    isGithubMirror(raw) &&
-    footers.some((footer) => (raw ?? '').trimEnd().endsWith(footer));
-  if (posts.some(copied))
+  if (
+    alreadyOnForum(posts, comment.html_url, required('DISCOURSE_API_USERNAME'))
+  )
     return console.log(`Comment ${comment.id} is already in topic ${topicId}.`);
   const created = await post(
     '/posts.json',
@@ -687,7 +762,7 @@ export const activityCutoff = (now, lastSuccessfulRunStart) =>
 const toGithub = async () => {
   const categoryId = parseCategoryId(required('DISCOURSE_CATEGORY_ID'));
   const apiUsername = required('DISCOURSE_API_USERNAME');
-  const { base, get } = forum({ readGapMs: forumReadGapMs() });
+  const { base, get, post } = forum({ readGapMs: forumReadGapMs() });
   const gh = github();
   const now = Date.now();
   const lastRun = await gh.lastSuccessfulRunStart(now).catch((error) => {
@@ -727,8 +802,42 @@ const toGithub = async () => {
     }
     return copied;
   };
+  /* Review summaries go to the forum from this scheduled run, because a review event from a fork has no secrets. */
+  const syncReviews = async (pullRequest) => {
+    const reviews = (await gh.reviews(pullRequest.number))
+      .filter((review) => shouldCopyReview(review, cutoff))
+      .sort((a, b) => Date.parse(a.submitted_at) - Date.parse(b.submitted_at));
+    if (!reviews.length) return 0;
+    const topicId = topicIdFromComments(await gh.comments(pullRequest.number));
+    if (!topicId) return 0;
+    /* A deleted or hidden topic stays that way; failing would fail every run for 48 hours. */
+    const found = await topicPosts(get, topicId).catch((error) => {
+      if ([HTTP_NOT_FOUND, HTTP_FORBIDDEN].includes(error.status)) return null;
+      throw error;
+    });
+    if (!found) {
+      console.log(
+        `::warning::Topic ${topicId} for #${pullRequest.number} is deleted or hidden, so its reviews are not copied.`,
+      );
+      return 0;
+    }
+    const { posts } = found;
+    let posted = 0;
+    for (const review of reviews) {
+      if (alreadyOnForum(posts, review.html_url, apiUsername)) continue;
+      await post(
+        '/posts.json',
+        { topic_id: topicId, raw: reviewReplyBody(review) },
+        'topics: write',
+      );
+      posted += 1;
+    }
+    return posted;
+  };
   let copied = 0;
+  let reviewsCopied = 0;
   let failed = 0;
+  let stopped = false;
   const listed = await recentTopics(get, categoryId, cutoff);
   for (const [index, topic] of listed.entries()) {
     const target = topicTarget(topic.title);
@@ -745,16 +854,37 @@ const toGithub = async () => {
         console.error(
           `::error::Stopped before ${left} more ${left === 1 ? 'topic' : 'topics'}; the next run tries again.`,
         );
+        stopped = true;
         break;
       }
     }
   }
+  const pullRequests = stopped
+    ? []
+    : await gh.updatedPullRequests(cutoff).catch((error) => {
+        failed += 1;
+        console.error(
+          `::error::Could not list the updated pull requests: ${describe(error)}`,
+        );
+        return [];
+      });
+  for (const pullRequest of pullRequests) {
+    try {
+      reviewsCopied += await syncReviews(pullRequest);
+    } catch (error) {
+      failed += 1;
+      console.error(
+        `::error::Could not copy the reviews of #${pullRequest.number}: ${describe(error)}`,
+      );
+      if (stopsTheRun(error, gh.api)) break;
+    }
+  }
   console.log(
-    `Copied ${copied} forum ${copied === 1 ? 'reply' : 'replies'} to GitHub.`,
+    `Copied ${copied} forum ${copied === 1 ? 'reply' : 'replies'} to GitHub and ${reviewsCopied} ${reviewsCopied === 1 ? 'review' : 'reviews'} to the forum.`,
   );
   if (failed)
     throw new Error(
-      `${failed} ${failed === 1 ? 'topic' : 'topics'} could not sync.`,
+      `${failed} ${failed === 1 ? 'topic or pull request' : 'topics or pull requests'} could not sync.`,
     );
 };
 
