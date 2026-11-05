@@ -436,7 +436,8 @@ export const request = async (url, init, scopeHint, limits = GITHUB_LIMITS) => {
 
 /* Discourse makes API keys with SecureRandom.hex(32) (app/models/api_key.rb). */
 const API_KEY_FORMAT = /^[0-9a-f]{64}$/;
-const USERNAME_FORMAT = /^[^\s\p{Cc}]{1,60}$/u;
+/* Printable ASCII: fetch sends header values as Latin-1 bytes, so any other name could never sign in. */
+const USERNAME_FORMAT = /^[\x21-\x7e]{1,60}$/;
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', '[::1]', 'localhost']);
 
 /** The forum settings, checked before any request; an error names the setting, never its value. */
