@@ -613,6 +613,47 @@ test('a reopen reopens first and unaccepts only close replies, from any API user
   ]);
 });
 
+/* Function: a re-run after a failed accept or close must not post its reply twice. Security: nobody else's post is reused. */
+test("a re-run reuses only the API user's earlier reply, even after a mirrored comment", () => {
+  const { reply } = topicStateChange(closedIssue('completed'))!;
+  const earlier = {
+    id: 11,
+    post_number: 4,
+    username: 'Forum-Bot',
+    raw: reply,
+  };
+  expect(earlierReplyId(posts(earlier), reply, API)).toBe(11);
+  expect(
+    earlierReplyId(
+      posts(earlier, {
+        id: 13,
+        post_number: 6,
+        username: API,
+        raw: 'nami wrote on GitHub:\n\nStill broken for me.',
+      }),
+      reply,
+      API,
+    ),
+    'a comment the bot mirrored after the reply must not hide it',
+  ).toBe(11);
+  expect(
+    earlierReplyId(posts({ ...earlier, username: 'mallory' }), reply, API),
+    'a copy of the reply by someone else would get the Solved credit',
+  ).toBeNull();
+  expect(
+    earlierReplyId(
+      posts({
+        ...earlier,
+        raw: reply.replace('2026-11-01T07:00:00Z', '2026-11-01T06:00:00Z'),
+      }),
+      reply,
+      API,
+    ),
+    'a close before a reopen is not this close, so it posts again',
+  ).toBeNull();
+  expect(earlierReplyId(posts(), reply, API)).toBeNull();
+});
+
 test('a reply Discourse will not let the bot accept takes the notice path', () => {
   expect(acceptDecision({ can_accept_answer: true })).toBe('accept');
   expect(acceptDecision({ can_accept_answer: false })).toBe('notice');
@@ -2158,54 +2199,4 @@ test('a forum rate limit stops the to-github run', async () => {
     fake.server.close();
     github.server.close();
   }
-});
-
-/* Function: a re-run after a failed accept or close must not post its reply twice. */
-test("a re-run reuses its earlier reply from any API user, even after a mirrored comment, but not a person's post", () => {
-  const { reply } = topicStateChange(closedIssue('completed'))!;
-  const earlier = {
-    id: 11,
-    post_number: 4,
-    username: 'Forum-Bot',
-    raw: reply,
-  };
-  expect(earlierReplyId(posts(earlier), reply)).toBe(11);
-  expect(
-    earlierReplyId(
-      posts(earlier, {
-        id: 13,
-        post_number: 6,
-        username: API,
-        raw: 'nami wrote on GitHub:\n\nStill broken for me.',
-      }),
-      reply,
-    ),
-    'a comment the bot mirrored after the reply must not hide it',
-  ).toBe(11);
-  expect(
-    earlierReplyId(posts({ ...earlier, username: 'old-bot' }), reply),
-    'a reply an earlier API user posted must be reused, not posted again',
-  ).toBe(11);
-  expect(
-    earlierReplyId(
-      posts({
-        ...earlier,
-        username: 'nami',
-        raw: reply.split('\n')[0],
-      }),
-      reply,
-    ),
-    "a person quoting the reply's first line is not the bot's reply",
-  ).toBeNull();
-  expect(
-    earlierReplyId(
-      posts({
-        ...earlier,
-        raw: reply.replace('2026-11-01T07:00:00Z', '2026-11-01T06:00:00Z'),
-      }),
-      reply,
-    ),
-    'a close before a reopen is not this close, so it posts again',
-  ).toBeNull();
-  expect(earlierReplyId(posts(), reply)).toBeNull();
 });

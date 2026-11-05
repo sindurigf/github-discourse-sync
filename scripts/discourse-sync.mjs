@@ -739,9 +739,13 @@ export const stateSteps = (change, posts) => {
   ];
 };
 
-/** The id of a reply an earlier run of this event posted, under any username; its event time makes the text unique. */
-export const earlierReplyId = (posts, reply) =>
-  posts.find((post) => (post.raw ?? '').trim() === reply.trim())?.id ?? null;
+/** The id of the reply an earlier run of this event posted as the API user; its event time makes the text unique. */
+export const earlierReplyId = (posts, reply, apiUsername) =>
+  posts.find(
+    (post) =>
+      post.username?.toLowerCase() === apiUsername.toLowerCase() &&
+      (post.raw ?? '').trim() === reply.trim(),
+  )?.id ?? null;
 
 /** Accept only what Discourse says this user may accept; Solved off on the category means not. */
 export const acceptDecision = (post) =>
@@ -768,7 +772,11 @@ const syncState = async () => {
     } else if (step === 'unaccept') {
       await post('/solution/unaccept.json', { id: postId }, 'solved: answer');
     } else if (step === 'reply') {
-      replyId = earlierReplyId(posts, change.reply);
+      replyId = earlierReplyId(
+        posts,
+        change.reply,
+        required('DISCOURSE_API_USERNAME'),
+      );
       if (replyId) {
         console.log(`Reply ${replyId} is already posted; reused.`);
         continue;
