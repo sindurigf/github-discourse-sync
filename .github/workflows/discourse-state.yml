@@ -6,13 +6,10 @@ name: Close and reopen Discourse topics
 on:
   issues:
     types: [closed, reopened]
-  pull_request_target:
+  pull_request_target: # zizmor: ignore[dangerous-triggers] fork pull requests need the forum secrets; only default-branch code runs (README.md#security).
     types: [closed, reopened]
 
-permissions:
-  contents: read
-  issues: read
-  pull-requests: read
+permissions: {}
 
 concurrency:
   # One FIFO queue per issue or pull request across the forum workflows: the
@@ -26,6 +23,10 @@ jobs:
     name: Update the Discourse topic
     if: vars.DISCOURSE_URL != '' && vars.DISCOURSE_CATEGORY_ID != ''
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read # checks out the script
+      issues: read # reads the comments that hold the topic link
+      pull-requests: read # reads pull request comments
     timeout-minutes: 5
 
     steps:

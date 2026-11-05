@@ -9,34 +9,41 @@ import type { AddressInfo } from 'node:net';
 import { expect, test } from '@playwright/test';
 import {
   BOT_LOGIN,
+  FORUM_MAX_POST_CHARS,
+  GITHUB_MAX_COMMENT_CHARS,
+  GITHUB_TRUNCATED_NOTE,
   LINK_COMMENT_PREFIX,
-  defuseMentions,
+  PR_LINK_COMMENT_PREFIX,
+  RUN_DEADLINE_MS,
+  SETUP_MARGIN_MS,
+  STATUS_SCOPE,
+  TRUNCATED_NOTE,
+  acceptDecision,
+  defuseText,
+  earlierReplyId,
   forumReplyBody,
   githubCommentBody,
-  PR_LINK_COMMENT_PREFIX,
-  pullRequestTopic,
-  shouldOpenTopic,
-  acceptDecision,
-  earlierReplyId,
-  stateSteps,
-  topicStateChange,
-  repoKey,
-  topicExternalId,
-  topicTarget,
+  markerOf,
   mirroredPostIds,
+  newTopic,
+  parseCategoryId,
+  repoKey,
   request,
   shouldMirrorComment,
   shouldMirrorPost,
+  shouldOpenTopic,
   splitByActivity,
-  STATUS_SCOPE,
+  stateSteps,
+  topicExternalId,
   topicIdFromComments,
-  FORUM_MAX_POST_CHARS,
-  TRUNCATED_NOTE,
-  parseCategoryId,
+  topicStateChange,
+  topicTarget,
 } from '../scripts/discourse-sync.mjs';
 
 /* Function: the issue and forum mirror never loops, never posts twice and never pings anyone. */
 const API_USER = 'forum-bot';
+/* Discourse API keys are SecureRandom.hex(32): 64 lowercase hex characters. */
+const API_KEY = 'a'.repeat(64);
 const reply = {
   id: 501,
   post_number: 2,
@@ -52,19 +59,8 @@ const human = {
 };
 const linkComment = {
   user: { login: BOT_LOGIN, type: 'Bot' },
-  body: `${LINK_COMMENT_PREFIX}https://forum.example/t/github-issue-3-crash/42`,
+  body: `${LINK_COMMENT_PREFIX}https://forum.example.com/t/github-issue-3-crash/42`,
 };
-
-test('the link comment text in issue-to-discourse.yml matches the script', () => {
-  const workflow = readFileSync(
-    '.github/workflows/issue-to-discourse.yml',
-    'utf8',
-  );
-  expect(
-    workflow,
-    'issue-to-discourse.yml no longer posts the text discourse-sync.mjs looks for',
-  ).toContain(LINK_COMMENT_PREFIX);
-});
 
 test('the topic id comes only from the bot link comment', () => {
   expect(topicIdFromComments([human, linkComment])).toBe(42);
@@ -100,7 +96,7 @@ test('a comment from a person goes to the forum, a bot or mirrored one does not'
   expect(
     shouldMirrorComment({
       ...human,
-      body: githubCommentBody(reply, 'https://forum.example/t/x/42/2'),
+      body: githubCommentBody(reply, 'https://forum.example.com/t/x/42/2'),
     }),
     'a mirrored forum reply must not go back to the forum',
   ).toBe(false);
@@ -128,7 +124,7 @@ test('a forum reply goes to GitHub once, never the first post, the API user or a
   const done = mirroredPostIds([
     {
       user: { login: BOT_LOGIN },
-      body: githubCommentBody(reply, 'https://forum.example/t/x/42/2'),
+      body: githubCommentBody(reply, 'https://forum.example.com/t/x/42/2'),
     },
   ]);
   expect(shouldMirrorPost(reply, API_USER, done)).toBe(false);
@@ -140,13 +136,10 @@ test('mirrored text names the author without an @ and defuses mentions', () => {
   expect(toForum).not.toMatch(/(^|[^\w`/])@[\w-]/);
   const toGithub = githubCommentBody(
     { ...reply, raw: '@luffy look' },
-    'https://forum.example/t/x/42/2',
+    'https://forum.example.com/t/x/42/2',
   );
   expect(toGithub.startsWith('robin wrote on the forum:')).toBe(true);
   expect(toGithub).not.toMatch(/(^|[^\w`/])@[\w-]/);
-  expect(defuseMentions('mail me at a@b.example')).toBe(
-    'mail me at a@b.example',
-  );
 });
 
 test('only the bot can mark a forum post as mirrored', () => {
@@ -156,7 +149,7 @@ test('only the bot can mark a forum post as mirrored', () => {
   expect(shouldMirrorPost(reply, API_USER, forged)).toBe(true);
   const copied = githubCommentBody(
     { ...reply, id: 600, raw: 'hi <!-- discourse-post:501 -->' },
-    'https://forum.example/t/x/42/3',
+    'https://forum.example.com/t/x/42/3',
   );
   expect(
     [...mirroredPostIds([{ user: { login: BOT_LOGIN }, body: copied }])],
@@ -288,7 +281,7 @@ test('a pull request topic links back through its own link comment', () => {
     topicIdFromComments([
       {
         user: { login: BOT_LOGIN },
-        body: `${PR_LINK_COMMENT_PREFIX}https://forum.example/t/github-pull-request-12-fix/77`,
+        body: `${PR_LINK_COMMENT_PREFIX}https://forum.example.com/t/github-pull-request-12-fix/77`,
       },
     ]),
   ).toBe(77);
@@ -313,35 +306,44 @@ test('a draft or bot pull request opens no topic', () => {
 });
 
 test('a pull request topic fits Discourse limits and pings no one', () => {
-  const topic = pullRequestTopic({
-    number: 12,
-    title: 'x'.repeat(400),
-    body: '@luffy please review',
-    html_url: 'https://github.com/o/r/pull/12',
-    user: { login: 'robin' },
-  });
+  const topic = newTopic(
+    {
+      number: 12,
+      title: 'x'.repeat(400),
+      body: '@luffy please review',
+      html_url: 'https://github.com/o/r/pull/12',
+      user: { login: 'robin' },
+    },
+    true,
+  );
   expect(topic.title.startsWith('GitHub pull request #12: ')).toBe(true);
   expect(Array.from(topic.title).length).toBeLessThanOrEqual(255);
-  const emoji = pullRequestTopic({
-    number: 12,
-    title: '🐈'.repeat(300),
-    body: '',
-    html_url: 'u',
-    user: { login: 'r' },
-  }).title;
+  const emoji = newTopic(
+    {
+      number: 12,
+      title: '🐈'.repeat(300),
+      body: '',
+      html_url: 'u',
+      user: { login: 'r' },
+    },
+    true,
+  ).title;
   expect(emoji, 'a cut must not leave half an emoji').not.toMatch(
     /[\uD800-\uDBFF](?![\uDC00-\uDFFF])/,
   );
   expect(topic.raw).toContain('https://github.com/o/r/pull/12');
   expect(topic.raw).not.toMatch(/(^|[^\w`/])@[\w-]/);
   expect(
-    pullRequestTopic({
-      number: 1,
-      title: 't',
-      body: null,
-      html_url: 'u',
-      user: { login: 'r' },
-    }).raw,
+    newTopic(
+      {
+        number: 1,
+        title: 't',
+        body: null,
+        html_url: 'u',
+        user: { login: 'r' },
+      },
+      true,
+    ).raw,
   ).toContain('_No description provided._');
 });
 
@@ -418,24 +420,34 @@ test('a pull request link comment from a person binds no topic', () => {
     topicIdFromComments([
       {
         user: { login: 'mallory' },
-        body: `${PR_LINK_COMMENT_PREFIX}https://forum.example/t/x/77`,
+        body: `${PR_LINK_COMMENT_PREFIX}https://forum.example.com/t/x/77`,
       },
     ]),
   ).toBeNull();
 });
 
-test('a pull request body longer than a forum post is shortened', () => {
-  const { raw } = pullRequestTopic({
-    number: 12,
-    title: 't',
-    body: 'x'.repeat(70_000),
-    html_url: 'https://github.com/o/r/pull/12',
-    user: { login: 'robin' },
+for (const kind of ['issue', 'pull request'] as const) {
+  test(`${kind === 'issue' ? 'an issue' : 'a pull request'} body longer than a forum post is shortened with the note`, () => {
+    for (const body of ['x'.repeat(70_000), '😀'.repeat(70_000)]) {
+      const { raw } = newTopic(
+        {
+          number: 12,
+          title: 't',
+          body,
+          html_url: 'https://github.com/o/r/pull/12',
+          user: { login: 'robin' },
+        },
+        kind === 'pull request',
+      );
+      expect(Array.from(raw).length).toBeLessThanOrEqual(FORUM_MAX_POST_CHARS);
+      expect(raw).toContain('https://github.com/o/r/pull/12');
+      expect(raw.endsWith(TRUNCATED_NOTE)).toBe(true);
+      expect(raw, 'a cut must not split a surrogate pair').not.toMatch(
+        /[\uD800-\uDBFF](?![\uDC00-\uDFFF])/,
+      );
+    }
   });
-  expect(Array.from(raw).length).toBeLessThanOrEqual(32_000);
-  expect(raw).toContain('https://github.com/o/r/pull/12');
-  expect(raw.endsWith(TRUNCATED_NOTE)).toBe(true);
-});
+}
 
 /* Security: pull_request_target runs with secrets, so it must never check out the pull request. */
 test('every pull_request_target checkout has no ref or the default branch ref', () => {
@@ -601,8 +613,8 @@ test('a reopen reopens first and unaccepts only close replies, from any API user
   ]);
 });
 
-/* Function: a re-run after a failed accept or close must not post its reply twice. */
-test("a re-run reuses its earlier reply from any API user, even after a mirrored comment, but not a person's post", () => {
+/* Function: a re-run after a failed accept or close must not post its reply twice. Security: nobody else's post is reused. */
+test("a re-run reuses only the API user's earlier reply, even after a mirrored comment", () => {
   const { reply } = topicStateChange(closedIssue('completed'))!;
   const earlier = {
     id: 11,
@@ -610,7 +622,7 @@ test("a re-run reuses its earlier reply from any API user, even after a mirrored
     username: 'Forum-Bot',
     raw: reply,
   };
-  expect(earlierReplyId(posts(earlier), reply)).toBe(11);
+  expect(earlierReplyId(posts(earlier), reply, API)).toBe(11);
   expect(
     earlierReplyId(
       posts(earlier, {
@@ -620,23 +632,13 @@ test("a re-run reuses its earlier reply from any API user, even after a mirrored
         raw: 'nami wrote on GitHub:\n\nStill broken for me.',
       }),
       reply,
+      API,
     ),
     'a comment the bot mirrored after the reply must not hide it',
   ).toBe(11);
   expect(
-    earlierReplyId(posts({ ...earlier, username: 'old-bot' }), reply),
-    'a reply an earlier API user posted must be reused, not posted again',
-  ).toBe(11);
-  expect(
-    earlierReplyId(
-      posts({
-        ...earlier,
-        username: 'nami',
-        raw: reply.split('\n')[0],
-      }),
-      reply,
-    ),
-    "a person quoting the reply's first line is not the bot's reply",
+    earlierReplyId(posts({ ...earlier, username: 'mallory' }), reply, API),
+    'a copy of the reply by someone else would get the Solved credit',
   ).toBeNull();
   expect(
     earlierReplyId(
@@ -645,10 +647,11 @@ test("a re-run reuses its earlier reply from any API user, even after a mirrored
         raw: reply.replace('2026-11-01T07:00:00Z', '2026-11-01T06:00:00Z'),
       }),
       reply,
+      API,
     ),
     'a close before a reopen is not this close, so it posts again',
   ).toBeNull();
-  expect(earlierReplyId(posts(), reply)).toBeNull();
+  expect(earlierReplyId(posts(), reply, API)).toBeNull();
 });
 
 test('a reply Discourse will not let the bot accept takes the notice path', () => {
@@ -685,7 +688,7 @@ test('every forum workflow per issue queues its runs without dropping one', () =
 });
 
 /* Function: a run that opened the topic but failed to comment must link it on a re-run, not 422 on the title. */
-type Hit = { method: string; url: string; body: string };
+type Hit = { method: string; url: string; body: string; at?: number };
 
 const fakeForumAndGithub = (
   topicExists: boolean,
@@ -754,7 +757,7 @@ const runOpenTopic = async (origin: string) => {
         GITHUB_TOKEN: 'gh-token',
         DISCOURSE_URL: origin,
         DISCOURSE_CATEGORY_ID: '5',
-        DISCOURSE_API_KEY: 'key',
+        DISCOURSE_API_KEY: API_KEY,
         DISCOURSE_API_USERNAME: 'forum-bot',
       },
     },
@@ -809,33 +812,6 @@ test('repositories that share a forum get different external_ids that Discourse 
   expect(new Set(ids).size, 'two topics share an external_id').toBe(ids.length);
   for (const id of ids) expect(id).toMatch(/^[\w-]{1,50}$/);
   expect(repoKey('o/r')).toMatch(/^[0-9a-f]{12}$/);
-});
-
-test('issue-to-discourse.yml builds the external_id the script would give an issue', async () => {
-  const run =
-    steps(
-      workflows().find(({ name }) => name === 'issue-to-discourse.yml')!
-        .workflow,
-    ).find((step) => step.run?.includes('external_id='))?.run ?? '';
-  const idScript = run.match(/^ *repo_key=.*\n *external_id=.*$/m)?.[0];
-  expect(
-    idScript,
-    'the repo_key and external_id lines are missing',
-  ).toBeDefined();
-  for (const repository of ['o/r', 'example-owner/a.b_c-d']) {
-    const { stdout } = await promisify(execFile)(
-      'bash',
-      ['-euo', 'pipefail', '-c', `${idScript}\nprintf '%s' "$external_id"`],
-      {
-        env: {
-          PATH: process.env['PATH'],
-          GITHUB_REPOSITORY: repository,
-          ISSUE_NUMBER: '3',
-        },
-      },
-    );
-    expect(stdout).toBe(topicExternalId(repository, 3, false));
-  }
 });
 
 test('a state reply posted by an earlier API user stays on the forum', () => {
@@ -930,6 +906,16 @@ test('a forum topic whose issue was deleted is skipped instead of failing the ru
           },
         },
       };
+    if (url === '/t/90.json')
+      return {
+        status: 200,
+        body: { id: 90, slug: 'deleted', post_stream: { stream: [1, 501] } },
+      };
+    if (url.startsWith('/t/90/posts.json'))
+      return {
+        status: 200,
+        body: { post_stream: { posts: [firstPost, reply] } },
+      };
     if (url === '/repos/o/r/issues/42')
       return { status: 410, body: { message: 'This issue was deleted' } };
     return { status: 500, body: { unexpected: url } };
@@ -946,7 +932,7 @@ test('a forum topic whose issue was deleted is skipped instead of failing the ru
           GITHUB_TOKEN: 'gh-token',
           DISCOURSE_URL: fake.origin,
           DISCOURSE_CATEGORY_ID: '5',
-          DISCOURSE_API_KEY: 'key',
+          DISCOURSE_API_KEY: API_KEY,
           DISCOURSE_API_USERNAME: 'forum-bot',
         },
       },
@@ -954,8 +940,8 @@ test('a forum topic whose issue was deleted is skipped instead of failing the ru
     expect(stdout).toContain('Copied 0 forum replies to GitHub.');
     expect(
       fake.hits,
-      'a deleted issue has no comments or topic posts to read',
-    ).not.toContainEqual(expect.stringMatching(/comments|^\/t\//));
+      'a deleted issue has no comments to read',
+    ).not.toContainEqual(expect.stringMatching(/comments/));
   } finally {
     fake.server.close();
   }
@@ -976,70 +962,6 @@ const workflows = (): { name: string; workflow: Workflow }[] =>
     }));
 const steps = (workflow: Workflow): Step[] =>
   Object.values(workflow.jobs ?? {}).flatMap((job) => job.steps ?? []);
-
-/* Function: the shell path for issues keeps the same category rule, post limit and mention rule as the script. */
-const issueTopicPayload = async (
-  body: string,
-  categoryId = '5',
-): Promise<{ raw: string }> => {
-  const run =
-    steps(
-      workflows().find(({ name }) => name === 'issue-to-discourse.yml')!
-        .workflow,
-    ).find((step) => step.run?.includes('payload=$(jq'))?.run ?? '';
-  const payloadScript = run.match(
-    /^ *if \[\[ ! "\$DISCOURSE_CATEGORY_ID"[\s\S]*?\}'\)$/m,
-  )?.[0];
-  expect(
-    payloadScript,
-    'the category check and jq payload are missing',
-  ).toBeDefined();
-  expect(Number(run.match(/^\s*max_chars=(\d+)$/m)?.[1])).toBe(
-    FORUM_MAX_POST_CHARS,
-  );
-  const { stdout } = await promisify(execFile)(
-    'bash',
-    ['-euo', 'pipefail', '-c', `${payloadScript}\nprintf '%s' "$payload"`],
-    {
-      env: {
-        PATH: process.env['PATH'],
-        DISCOURSE_CATEGORY_ID: categoryId,
-        ISSUE_NUMBER: '3',
-        ISSUE_TITLE: 'Crash',
-        ISSUE_BODY: body,
-        ISSUE_URL: 'https://github.com/o/r/issues/3',
-        ISSUE_AUTHOR: 'robin',
-        external_id: topicExternalId('o/r', 3, false),
-      },
-      maxBuffer: 1024 * 1024,
-    },
-  );
-  return JSON.parse(stdout);
-};
-
-test('an issue body longer than a forum post is shortened with the note', async () => {
-  const { raw } = await issueTopicPayload('x'.repeat(65_536));
-  expect(Array.from(raw).length).toBeLessThanOrEqual(FORUM_MAX_POST_CHARS);
-  expect(raw).toContain('https://github.com/o/r/issues/3');
-  expect(raw.endsWith(TRUNCATED_NOTE)).toBe(true);
-});
-
-test('an issue body that fits is posted whole, with mentions defused', async () => {
-  const { raw } = await issueTopicPayload('Ping @robin about it.');
-  expect(raw).toContain('Ping @​robin about it.');
-  expect(raw).not.toContain(TRUNCATED_NOTE.trim());
-});
-
-test('issue-to-discourse.yml refuses a category id that is not a positive whole number', async () => {
-  for (const value of ['github', '0', '5.5']) {
-    await expect(
-      issueTopicPayload('Body', value),
-      `${value} was accepted`,
-    ).rejects.toMatchObject({
-      stdout: expect.stringContaining('::error::Set DISCOURSE_CATEGORY_ID'),
-    });
-  }
-});
 
 test('a category id that is not a positive whole number is refused', () => {
   expect(parseCategoryId('5')).toBe(5);
@@ -1088,5 +1010,1240 @@ test('no pull_request_target run step fetches the pull request', () => {
         `${name} step "${step.name}" fetches the pull request`,
       ).not.toMatch(fetchesPullRequest);
     }
+  }
+});
+
+type Route = (
+  method: string,
+  url: string,
+  body: string,
+) =>
+  { status: number; body?: unknown; headers?: Record<string, string> } | 'drop';
+
+const fakeApi = (
+  route: Route,
+): Promise<{ server: Server; origin: string; hits: Hit[] }> =>
+  new Promise((resolve) => {
+    const hits: Hit[] = [];
+    const server = createServer((req, res) => {
+      let body = '';
+      req.on('data', (chunk) => (body += chunk));
+      req.on('end', () => {
+        const method = req.method ?? '';
+        const url = req.url ?? '';
+        hits.push({ method, url, body, at: performance.now() });
+        const answer = route(method, url, body);
+        if (answer === 'drop') return req.socket.destroy();
+        res.writeHead(answer.status, {
+          'content-type': 'application/json',
+          ...answer.headers,
+        });
+        res.end(JSON.stringify(answer.body ?? {}));
+      });
+    });
+    server.listen(0, '127.0.0.1', () =>
+      resolve({
+        server,
+        origin: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
+        hits,
+      }),
+    );
+  });
+
+const runMode = async (
+  mode: string,
+  origin: string,
+  event?: unknown,
+  env: Record<string, string> = {},
+): Promise<{ code: number; stdout: string; stderr: string }> => {
+  const eventPath = join(mkdtempSync(join(tmpdir(), 'discourse-')), 'e.json');
+  writeFileSync(eventPath, JSON.stringify(event ?? {}));
+  try {
+    const { stdout, stderr } = await promisify(execFile)(
+      process.execPath,
+      ['scripts/discourse-sync.mjs', mode],
+      {
+        env: {
+          PATH: process.env.PATH,
+          GITHUB_EVENT_PATH: eventPath,
+          GITHUB_API_URL: origin,
+          GITHUB_REPOSITORY: 'o/r',
+          GITHUB_TOKEN: 'gh-token',
+          DISCOURSE_URL: origin,
+          DISCOURSE_CATEGORY_ID: '5',
+          DISCOURSE_API_KEY: API_KEY,
+          DISCOURSE_API_USERNAME: API_USER,
+          ...env,
+        },
+      },
+    );
+    return { code: 0, stdout, stderr };
+  } catch (error) {
+    const failed = error as { code: number; stdout: string; stderr: string };
+    return { code: failed.code, stdout: failed.stdout, stderr: failed.stderr };
+  }
+};
+
+const recentTopic = (id: number, issue: number) => ({
+  id,
+  title: `GitHub issue #${issue}: Crash`,
+  category_id: 5,
+  bumped_at: new Date().toISOString(),
+});
+const topicLink = (topicId: number) => ({
+  user: { login: BOT_LOGIN, type: 'Bot' },
+  body: `${LINK_COMMENT_PREFIX}https://forum.example.com/t/crash/${topicId}`,
+});
+const firstPost = {
+  id: 1,
+  post_number: 1,
+  post_type: 1,
+  username: API_USER,
+  raw: 'Opened',
+};
+
+test('a nested marker in forum text cannot mark another post as mirrored', () => {
+  const copied = githubCommentBody(
+    {
+      ...reply,
+      id: 600,
+      raw: 'x <!-- discourse-post:<!-- discourse-post:1 -->777 --> y',
+    },
+    'https://forum.example.com/t/x/42/3',
+  );
+  expect([
+    ...mirroredPostIds([{ user: { login: BOT_LOGIN }, body: copied }]),
+  ]).toEqual([600]);
+});
+
+test('a pinned topic bumped inside the window syncs, an old pinned one neither syncs nor ends paging', () => {
+  const cutoff = Date.parse('2026-10-29T00:00:00Z');
+  const page = [
+    { id: 1, pinned: true, bumped_at: '2026-10-30T00:00:00Z' },
+    { id: 2, pinned: true, bumped_at: '2020-01-01T00:00:00Z' },
+    { id: 3, bumped_at: '2026-10-30T00:00:00Z' },
+  ];
+  expect(splitByActivity(page, cutoff)).toEqual({
+    recent: [page[0], page[2]],
+    older: false,
+  });
+});
+
+test('a forum reply longer than a GitHub comment is shortened, keeping its link and marker', () => {
+  const url = 'https://forum.example.com/t/x/42/2';
+  for (const raw of ['x'.repeat(70_000), '😀'.repeat(70_000)]) {
+    const body = githubCommentBody({ ...reply, raw }, url);
+    expect(Array.from(body).length).toBeLessThanOrEqual(
+      GITHUB_MAX_COMMENT_CHARS,
+    );
+    expect(body).toContain(GITHUB_TRUNCATED_NOTE);
+    expect(body).toContain(url);
+    expect(body.endsWith(markerOf(reply.id))).toBe(true);
+    expect(body, 'a cut must not split a surrogate pair').not.toMatch(
+      /[\uD800-\uDBFF](?![\uDC00-\uDFFF])/,
+    );
+  }
+});
+
+test('one failing topic is reported while later topics still sync, and the run fails', async () => {
+  const fake = await fakeApi((method, url) => {
+    if (url.startsWith('/c/5/l/latest.json'))
+      return {
+        status: 200,
+        body: {
+          topic_list: { topics: [recentTopic(90, 4), recentTopic(91, 3)] },
+        },
+      };
+    if (url === '/t/90.json') return { status: 403, body: { errors: ['no'] } };
+    if (url === '/t/91.json')
+      return {
+        status: 200,
+        body: { id: 91, slug: 'crash', post_stream: { stream: [1, 501] } },
+      };
+    if (url.startsWith('/t/91/posts.json'))
+      return {
+        status: 200,
+        body: { post_stream: { posts: [firstPost, reply] } },
+      };
+    if (url === '/repos/o/r/issues/3')
+      return {
+        status: 200,
+        body: { number: 3, repository_url: `${fake.origin}/repos/o/r` },
+      };
+    if (url.startsWith('/repos/o/r/issues/3/comments'))
+      return method === 'POST'
+        ? { status: 201 }
+        : { status: 200, body: [topicLink(91)] };
+    return { status: 500, body: { unexpected: url } };
+  });
+  try {
+    const run = await runMode('to-github', fake.origin);
+    expect(run.code, 'a failed topic must fail the run').not.toBe(0);
+    expect(run.stderr).toContain('topic 90');
+    expect(
+      fake.hits.filter(
+        ({ method, url }) =>
+          method === 'POST' && url.startsWith('/repos/o/r/issues/3/comments'),
+      ),
+      'topic 91 still syncs after topic 90 fails',
+    ).toHaveLength(1);
+  } finally {
+    fake.server.close();
+  }
+});
+
+test('a GET retries a 5xx answer and a dropped connection, a POST does not', async () => {
+  let calls = 0;
+  const fake = await fakeApi((method, url) => {
+    calls += 1;
+    if (url === '/flaky' && calls === 1)
+      return { status: 503, headers: { 'retry-after': '1' } };
+    if (url === '/dropped' && calls === 3) return 'drop';
+    if (url === '/post') return { status: 502 };
+    return { status: 200, body: { ok: true } };
+  });
+  try {
+    expect(await (await request(`${fake.origin}/flaky`, {})).json()).toEqual({
+      ok: true,
+    });
+    expect(await (await request(`${fake.origin}/dropped`, {})).json()).toEqual({
+      ok: true,
+    });
+    await expect(
+      request(`${fake.origin}/post`, { method: 'POST', body: '{}' }),
+    ).rejects.toThrow(/answered 502/);
+    expect(fake.hits.map(({ url }) => url)).toEqual([
+      '/flaky',
+      '/flaky',
+      '/dropped',
+      '/dropped',
+      '/post',
+    ]);
+  } finally {
+    fake.server.close();
+  }
+});
+
+test('ordinary text that starts like a mirror header is still copied both ways', () => {
+  expect(
+    shouldMirrorComment({ ...human, body: 'I wrote on the forum: see logs' }),
+  ).toBe(true);
+  expect(
+    shouldMirrorPost(
+      { ...reply, raw: 'I wrote on GitHub: see logs' },
+      API_USER,
+      new Set(),
+    ),
+  ).toBe(true);
+  expect(
+    shouldMirrorPost(
+      { ...reply, username: 'old-bot', raw: forumReplyBody(human) },
+      API_USER,
+      new Set(),
+    ),
+    'a mirror an earlier API user posted is still recognized',
+  ).toBe(false);
+});
+
+test('a re-run of a comment already on the forum posts nothing', async () => {
+  const fake = await fakeApi((method, url) => {
+    if (url.startsWith('/repos/o/r/issues/3/comments'))
+      return { status: 200, body: [topicLink(42)] };
+    if (url === '/t/42.json')
+      return {
+        status: 200,
+        body: { id: 42, slug: 'crash', post_stream: { stream: [1, 7] } },
+      };
+    if (url.startsWith('/t/42/posts.json'))
+      return {
+        status: 200,
+        body: {
+          post_stream: {
+            posts: [
+              firstPost,
+              {
+                id: 7,
+                post_number: 2,
+                post_type: 1,
+                username: API_USER,
+                raw: forumReplyBody(human),
+              },
+            ],
+          },
+        },
+      };
+    return { status: 500, body: { unexpected: `${method} ${url}` } };
+  });
+  try {
+    const run = await runMode('to-forum', fake.origin, {
+      comment: human,
+      issue: { number: 3 },
+    });
+    expect(run.code).toBe(0);
+    expect(fake.hits.filter(({ method }) => method === 'POST')).toEqual([]);
+  } finally {
+    fake.server.close();
+  }
+});
+
+test('discourse-comment-to-topic.yml skips comments from bots', () => {
+  const job = (
+    load(
+      readFileSync('.github/workflows/discourse-comment-to-topic.yml', 'utf8'),
+    ) as {
+      jobs: Record<string, { if?: string }>;
+    }
+  ).jobs['to-forum'];
+  expect(job.if).toContain("github.event.comment.user.type != 'Bot'");
+});
+
+test('a topic with no reply from a person costs no GitHub request', async () => {
+  const fake = await fakeApi((method, url) => {
+    if (url.startsWith('/c/5/l/latest.json'))
+      return {
+        status: 200,
+        body: { topic_list: { topics: [recentTopic(91, 3)] } },
+      };
+    if (url === '/t/91.json')
+      return {
+        status: 200,
+        body: { id: 91, slug: 'crash', post_stream: { stream: [1, 2] } },
+      };
+    if (url.startsWith('/t/91/posts.json'))
+      return {
+        status: 200,
+        body: {
+          post_stream: {
+            posts: [
+              firstPost,
+              {
+                id: 2,
+                post_number: 2,
+                post_type: 1,
+                username: API_USER,
+                raw: forumReplyBody(human),
+              },
+            ],
+          },
+        },
+      };
+    return { status: 500, body: { unexpected: `${method} ${url}` } };
+  });
+  try {
+    const run = await runMode('to-github', fake.origin);
+    expect(run.code).toBe(0);
+    expect(fake.hits.filter(({ url }) => url.startsWith('/repos/'))).toEqual(
+      [],
+    );
+  } finally {
+    fake.server.close();
+  }
+});
+
+const openedIssue = {
+  issue: {
+    number: 3,
+    title: 'Crash',
+    body: 'Ping @nami about it.',
+    html_url: 'https://github.com/o/r/issues/3',
+    user: { login: 'robin', type: 'User' },
+  },
+};
+
+test('a new issue opens a topic with its own external_id and is linked from the issue', async () => {
+  const fake = await fakeApi((method, url) => {
+    if (url.startsWith('/repos/o/r/issues/3/comments'))
+      return method === 'POST' ? { status: 201 } : { status: 200, body: [] };
+    if (url === `/t/external_id/${topicExternalId('o/r', 3, false)}.json`)
+      return { status: 404, body: { errors: ['Not found'] } };
+    if (url === '/posts.json' && method === 'POST')
+      return { status: 200, body: { topic_id: 80, topic_slug: 'crash' } };
+    return { status: 500, body: { unexpected: `${method} ${url}` } };
+  });
+  try {
+    const run = await runMode('open-topic', fake.origin, openedIssue);
+    expect(run.code).toBe(0);
+    const created = JSON.parse(
+      fake.hits.find(({ url }) => url === '/posts.json')?.body ?? '{}',
+    );
+    expect(created).toMatchObject({
+      title: 'GitHub issue #3: Crash',
+      category: 5,
+      external_id: topicExternalId('o/r', 3, false),
+    });
+    expect(created.raw).toContain('https://github.com/o/r/issues/3');
+    expect(created.raw).toContain('@\u200bnami');
+    expect(linkComments(fake.hits)).toEqual([
+      `${LINK_COMMENT_PREFIX}${fake.origin}/t/crash/80`,
+    ]);
+  } finally {
+    fake.server.close();
+  }
+});
+
+test('open-topic refuses a category id that is not a positive whole number before posting', async () => {
+  const fake = await fakeApi((method, url) => {
+    if (url.startsWith('/repos/o/r/issues/3/comments'))
+      return { status: 200, body: [] };
+    if (url.startsWith('/t/external_id/'))
+      return { status: 404, body: { errors: ['Not found'] } };
+    return { status: 500, body: { unexpected: `${method} ${url}` } };
+  });
+  try {
+    const run = await runMode('open-topic', fake.origin, openedIssue, {
+      DISCOURSE_CATEGORY_ID: '5abc',
+    });
+    expect(run.code).not.toBe(0);
+    expect(run.stderr).toContain('Set DISCOURSE_CATEGORY_ID');
+    expect(fake.hits.filter(({ method }) => method === 'POST')).toEqual([]);
+  } finally {
+    fake.server.close();
+  }
+});
+
+test('a person quoting the comment link in the topic does not stop the comment', async () => {
+  const fake = await fakeApi((method, url) => {
+    if (url.startsWith('/repos/o/r/issues/3/comments'))
+      return { status: 200, body: [topicLink(42)] };
+    if (url === '/t/42.json')
+      return {
+        status: 200,
+        body: { id: 42, slug: 'crash', post_stream: { stream: [1, 7] } },
+      };
+    if (url.startsWith('/t/42/posts.json'))
+      return {
+        status: 200,
+        body: {
+          post_stream: {
+            posts: [
+              firstPost,
+              {
+                id: 7,
+                post_number: 2,
+                post_type: 1,
+                username: 'nami',
+                raw: `See\n\n${human.html_url}`,
+              },
+            ],
+          },
+        },
+      };
+    if (url === '/posts.json' && method === 'POST')
+      return { status: 200, body: { id: 8 } };
+    return { status: 500, body: { unexpected: `${method} ${url}` } };
+  });
+  try {
+    const run = await runMode('to-forum', fake.origin, {
+      comment: human,
+      issue: { number: 3 },
+    });
+    expect(run.code, run.stderr).toBe(0);
+    expect(fake.hits.filter(({ method }) => method === 'POST')).toHaveLength(1);
+  } finally {
+    fake.server.close();
+  }
+});
+
+test('a topic the forum keeps failing is skipped while later topics sync, and the run fails', async () => {
+  const fake = await fakeApi((method, url) => {
+    if (url.startsWith('/c/5/l/latest.json'))
+      return {
+        status: 200,
+        body: {
+          topic_list: { topics: [recentTopic(90, 4), recentTopic(91, 3)] },
+        },
+      };
+    if (url === '/t/90.json')
+      return { status: 503, headers: { 'retry-after': '1' } };
+    if (url === '/t/91.json')
+      return {
+        status: 200,
+        body: { id: 91, slug: 'crash', post_stream: { stream: [1, 501] } },
+      };
+    if (url.startsWith('/t/91/posts.json'))
+      return {
+        status: 200,
+        body: { post_stream: { posts: [firstPost, reply] } },
+      };
+    if (url === '/repos/o/r/issues/3')
+      return {
+        status: 200,
+        body: { number: 3, repository_url: `${fake.origin}/repos/o/r` },
+      };
+    if (url.startsWith('/repos/o/r/issues/3/comments'))
+      return method === 'POST'
+        ? { status: 201 }
+        : { status: 200, body: [topicLink(91)] };
+    return { status: 500, body: { unexpected: `${method} ${url}` } };
+  });
+  try {
+    const run = await runMode('to-github', fake.origin);
+    expect(run.code).not.toBe(0);
+    expect(run.stderr).toContain('Could not sync topic 90');
+    expect(run.stderr).not.toContain('Stopped before');
+    expect(
+      fake.hits.filter(
+        ({ method, url }) =>
+          method === 'POST' && url.startsWith('/repos/o/r/issues/3/comments'),
+      ),
+    ).toHaveLength(1);
+  } finally {
+    fake.server.close();
+  }
+});
+
+test('a failing topic reports the cause of a network error', async () => {
+  const fake = await fakeApi((method, url) => {
+    if (url.startsWith('/c/5/l/latest.json'))
+      return {
+        status: 200,
+        body: { topic_list: { topics: [recentTopic(91, 3)] } },
+      };
+    if (url === '/t/91.json')
+      return {
+        status: 200,
+        body: { id: 91, slug: 'crash', post_stream: { stream: [1, 501] } },
+      };
+    if (url.startsWith('/t/91/posts.json'))
+      return {
+        status: 200,
+        body: { post_stream: { posts: [firstPost, reply] } },
+      };
+    if (url === '/repos/o/r/issues/3')
+      return {
+        status: 200,
+        body: { number: 3, repository_url: `${fake.origin}/repos/o/r` },
+      };
+    if (url.startsWith('/repos/o/r/issues/3/comments'))
+      return method === 'POST'
+        ? 'drop'
+        : { status: 200, body: [topicLink(91)] };
+    return { status: 500, body: { unexpected: `${method} ${url}` } };
+  });
+  try {
+    const run = await runMode('to-github', fake.origin);
+    expect(run.code).not.toBe(0);
+    expect(run.stderr).toMatch(/Could not sync topic 91: fetch failed \(.+\)/);
+  } finally {
+    fake.server.close();
+  }
+});
+
+for (const [name, headers, stops] of [
+  [
+    '403 for a secondary rate limit (Retry-After) stops the run',
+    { 'retry-after': '60' },
+    true,
+  ],
+  [
+    '403 for a primary rate limit (no requests left) stops the run',
+    { 'x-ratelimit-remaining': '0' },
+    true,
+  ],
+  [
+    '403 that is not a rate limit skips one topic',
+    { 'x-ratelimit-remaining': '4999' },
+    false,
+  ],
+] as [string, Record<string, string>, boolean][])
+  test(`in to-github, GitHub's ${name}`, async () => {
+    const fake = await fakeApi((method, url) => {
+      if (url.startsWith('/c/5/l/latest.json'))
+        return {
+          status: 200,
+          body: {
+            topic_list: { topics: [recentTopic(91, 3), recentTopic(92, 4)] },
+          },
+        };
+      const topic = /^\/t\/(9[12])(?:\.json|\/posts\.json)/.exec(url)?.[1];
+      if (topic && url.endsWith('.json'))
+        return {
+          status: 200,
+          body: {
+            id: Number(topic),
+            slug: 'crash',
+            post_stream: { stream: [1, 501] },
+          },
+        };
+      if (topic)
+        return {
+          status: 200,
+          body: { post_stream: { posts: [firstPost, reply] } },
+        };
+      if (url === '/repos/o/r/issues/3')
+        return { status: 403, headers, body: { message: 'Forbidden' } };
+      if (url === '/repos/o/r/issues/4')
+        return {
+          status: 200,
+          body: { number: 4, repository_url: `${fake.origin}/repos/o/r` },
+        };
+      if (url.startsWith('/repos/o/r/issues/4/comments'))
+        return method === 'POST'
+          ? { status: 201 }
+          : { status: 200, body: [topicLink(92)] };
+      return { status: 500, body: { unexpected: `${method} ${url}` } };
+    });
+    try {
+      const run = await runMode('to-github', fake.origin);
+      expect(run.code).not.toBe(0);
+      expect(run.stderr.includes('Stopped before 1 more topic')).toBe(stops);
+      expect(fake.hits.some(({ url }) => url === '/repos/o/r/issues/4')).toBe(
+        !stops,
+      );
+    } finally {
+      fake.server.close();
+    }
+  });
+
+test('a request GitHub or Discourse never received, such as a bad header, is not retried', async () => {
+  const started = performance.now();
+  await expect(
+    request('http://127.0.0.1:9/t/1.json', {
+      headers: { 'Api-Key': 'bad\nkey' },
+    }),
+  ).rejects.toThrow(/header/i);
+  /* The first retry waits BACKOFF_BASE_MS, 2 s. */
+  expect(performance.now() - started, 'a bad header was retried').toBeLessThan(
+    2_000,
+  );
+});
+
+test('a re-run for an issue links the topic an earlier run opened instead of posting', async () => {
+  const fake = await fakeApi((method, url) => {
+    if (url.startsWith('/repos/o/r/issues/3/comments'))
+      return method === 'POST' ? { status: 201 } : { status: 200, body: [] };
+    if (url === `/t/external_id/${topicExternalId('o/r', 3, false)}.json`)
+      return { status: 301, headers: { location: '/t/crash/80.json' } };
+    if (url === '/t/crash/80.json')
+      return { status: 200, body: { id: 80, slug: 'crash' } };
+    return { status: 500, body: { unexpected: `${method} ${url}` } };
+  });
+  try {
+    const run = await runMode('open-topic', fake.origin, openedIssue);
+    expect(run.code, run.stderr).toBe(0);
+    expect(fake.hits.some(({ url }) => url === '/posts.json')).toBe(false);
+    expect(linkComments(fake.hits)).toEqual([
+      `${LINK_COMMENT_PREFIX}${fake.origin}/t/crash/80`,
+    ]);
+  } finally {
+    fake.server.close();
+  }
+});
+
+test('each mode stops at its run deadline, before its job times out', () => {
+  const modes = new Set<string>();
+  for (const { name, workflow } of workflows()) {
+    for (const job of Object.values(workflow.jobs ?? {}) as {
+      'timeout-minutes'?: number;
+      steps?: Step[];
+    }[]) {
+      const mode = (job.steps ?? [])
+        .map(
+          (step) =>
+            /node scripts\/discourse-sync\.mjs (\S+)/.exec(step.run ?? '')?.[1],
+        )
+        .find(Boolean);
+      if (!mode) continue;
+      modes.add(mode);
+      const deadline = (RUN_DEADLINE_MS as Record<string, number>)[mode];
+      expect(
+        deadline,
+        `${name} runs ${mode}, which has no deadline`,
+      ).toBeGreaterThan(0);
+      expect(
+        deadline + SETUP_MARGIN_MS,
+        `${name} can time out before ${mode} reaches its deadline`,
+      ).toBeLessThanOrEqual((job['timeout-minutes'] ?? 0) * 60_000);
+    }
+  }
+  expect([...modes].sort()).toEqual([
+    'open-topic',
+    'state',
+    'to-forum',
+    'to-github',
+  ]);
+});
+
+test('a forum that never answers fails the run at its deadline with a clear error', async () => {
+  const server = createServer(() => {});
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  try {
+    const started = performance.now();
+    const run = await runMode(
+      'to-forum',
+      origin,
+      { comment: human, issue: { number: 3 } },
+      { SYNC_DEADLINE_MS: '1500' },
+    );
+    expect(run.code).not.toBe(0);
+    expect(run.stderr).toMatch(/passed its 1\.5 s run deadline/);
+    expect(performance.now() - started).toBeLessThan(10_000);
+  } finally {
+    server.closeAllConnections();
+    server.close();
+  }
+});
+
+const ZWSP = '​';
+/* Defusing time over one simple pass on the same text: about 10 to 30 when linear, over 20,000 for the old repeated strip. */
+const costOverOnePass = (text: string) => {
+  const best = (run: () => void) =>
+    Math.min(
+      ...[1, 2, 3].map(() => {
+        const started = performance.now();
+        run();
+        return performance.now() - started;
+      }),
+    );
+  return (
+    best(() => defuseText(text)) /
+    Math.max(
+      best(() => text.replace(/x/g, 'y').toUpperCase()),
+      0.01,
+    )
+  );
+};
+
+for (const [name, input, expected] of [
+  ['a mention', '@octocat look', `@${ZWSP}octocat look`],
+  [
+    'a mention after a letter',
+    'é@octocat 中@octocat',
+    `é@${ZWSP}octocat 中@${ZWSP}octocat`,
+  ],
+  [
+    'a mention after a link',
+    '[x](https://forum.example.com)@octocat',
+    `[x](https://forum.example.com)@${ZWSP}octocat`,
+  ],
+  [
+    'a mention after <',
+    'https://forum.example.com<@octocat',
+    `https://forum.example.com<@${ZWSP}octocat`,
+  ],
+  [
+    'a mention after a broken link',
+    'see http://)@octocat',
+    `see http://)@${ZWSP}octocat`,
+  ],
+  ['an email address', 'a@b.example.com', `a@${ZWSP}b.example.com`],
+  [
+    'a reference after a link',
+    '[x](https://forum.example.com)octocat/Hello-World#1',
+    `[x](https://forum.example.com)octocat/Hello-World#${ZWSP}1`,
+  ],
+  [
+    'a GitHub link after a link',
+    '[t](https://forum.example.com)https://github.com/octocat/Hello-World/issues/1',
+    `[t](https://forum.example.com)https://redirect.github.com/octocat/Hello-World/issues/${ZWSP}1`,
+  ],
+  [
+    'a link fragment',
+    'https://forum.example.com/t/x/123#4',
+    `https://forum.example.com/t/x/123#${ZWSP}4`,
+  ],
+  [
+    'an entity for @',
+    '&#64;octocat &commat;octocat',
+    `&amp;#${ZWSP}64;octocat &amp;commat;octocat`,
+  ],
+  [
+    'an entity for # and :',
+    'cli/cli&#35;2 [x](https&#58;//github.com/a)',
+    `cli/cli&amp;#${ZWSP}35;2 [x](https&amp;#${ZWSP}58;//redirect.github.com/a)`,
+  ],
+  [
+    'a redirect link, kept',
+    'https://redirect.github.com/a',
+    'https://redirect.github.com/a',
+  ],
+  ['a marker', '<!-- discourse-post:5 -->', `<!-- discourse-post${ZWSP}:5 -->`],
+  [
+    'a GH- reference',
+    'GH-1 gh-0001 (Gh-2)',
+    `GH-${ZWSP}1 gh-${ZWSP}0001 (Gh-${ZWSP}2)`,
+  ],
+  [
+    'an issue path',
+    'actions/checkout/issues/1 and /pull/2',
+    `actions/checkout/issues/${ZWSP}1 and /pull/${ZWSP}2`,
+  ],
+  [
+    'a relative issue path',
+    '/issues/3 ../issues/1 pulls/4 discussions/5',
+    `/issues/${ZWSP}3 ../issues/${ZWSP}1 pulls/${ZWSP}4 discussions/${ZWSP}5`,
+  ],
+  [
+    'a scheme-less GitHub link',
+    'github.com/o/r/issues/1',
+    `redirect.github.com/o/r/issues/${ZWSP}1`,
+  ],
+  [
+    'a Discourse quote',
+    '[quote="octocat, post:1, topic:2"] [QUOTE=x]',
+    `[quote${ZWSP}="octocat, post:1, topic:2"] [QUOTE${ZWSP}=x]`,
+  ],
+  [
+    'backslash escapes',
+    String.raw`[https://github\.com/cli/cli/issues\/1] GH\-1 gh\-2`,
+    String.raw`[https://redirect.github.com/cli/cli/issues\/` +
+      `${ZWSP}1] GH\\-${ZWSP}1 gh\\-${ZWSP}2`,
+  ],
+  [
+    'a quote username field',
+    '[quote="Octo Cat, post:1, topic:2, username:octocat"]',
+    `[quote${ZWSP}="Octo Cat, post:1, topic:2, username${ZWSP}:octocat"]`,
+  ],
+] as const)
+  test(`copied text defuses ${name}`, () => {
+    expect(defuseText(input)).toBe(expected);
+  });
+
+test('no adversarial input keeps a mention, reference, entity, GitHub link or marker', () => {
+  const corpus = [
+    '@a',
+    '_@a_',
+    '`@a',
+    'a/@a',
+    'é@a',
+    '(@a)',
+    '&#64;a',
+    '&#x40;a',
+    '&commat;a',
+    'o/r#1',
+    'o/r&#35;1',
+    'o/r&num;1',
+    '#1',
+    'GH-1 #1',
+    'gh-0001',
+    '(GH-1)',
+    'actions/checkout/issues/1',
+    'o/r/pull/2',
+    '/issues/3',
+    '../issues/1',
+    'pulls/4',
+    'discussions/5',
+    '[quote="octocat, post:1, topic:2"]',
+    'https://github.com/o/r/issues/1',
+    'HTTPS://GITHUB.COM/o/r/pull/2',
+    'www.github.com/o/r/issues/3',
+    'github.com/o/r',
+    '[x](https&#58;//github.com/o/r/issues/4)',
+    '<!-- discourse-post:<!-- discourse-post:1 -->7 -->',
+    '&amp;#64;a',
+    '&&#64;a',
+    String.raw`[https://github\.com/cli/cli/issues\/1]`,
+    String.raw`GH\-1`,
+    String.raw`gh\-0001`,
+    String.raw`https://github\.com/o/r/commit/abc`,
+    String.raw`GITHUB\.COM/o/r`,
+    String.raw`issues\/1`,
+    String.raw`pull\/2`,
+    String.raw`discussions\/3`,
+    String.raw`[x](https://github\.com/o/r/pull\/4)`,
+    String.raw`(GH\-5)`,
+    'username:octocat"]',
+  ];
+  for (const input of corpus) {
+    const out = defuseText(input);
+    expect(out, input).not.toMatch(/@(?!​)/);
+    expect(out, input).not.toMatch(/#\d/);
+    expect(out, input).not.toMatch(/\bgh\\?-\d/i);
+    expect(out, input).not.toMatch(/\b(?:issues|pulls?|discussions)\\?\/\d/);
+    expect(out, input).not.toMatch(/username:/i);
+    expect(out, input).not.toMatch(/\[quote(?!\u200b)/i);
+    expect(out, input).not.toMatch(/&#|&(?!amp;)[A-Za-z]+;/);
+    expect(out, input).not.toMatch(/(?<!redirect\\?\.)github\\?\.com/i);
+    expect(out, input).not.toMatch(/discourse-post:/);
+  }
+});
+
+test('copied text is defused in linear time, nested markers included', () => {
+  const nested = (n: number) =>
+    '<!-- discourse-post:'.repeat(n) + '1 -->' + '7 -->'.repeat(n);
+  const mixed = (n: number) => 'a/@#1&#64;github.com '.repeat(n);
+  for (const make of [nested, mixed])
+    expect(
+      costOverOnePass(make(20_000)),
+      'defusing is not linear',
+    ).toBeLessThan(300);
+});
+
+test('a mode name inherited from Object, such as constructor, is refused', async () => {
+  const run = await runMode('constructor', 'http://127.0.0.1:9');
+  expect(run.code).not.toBe(0);
+  expect(run.stderr).toContain('Usage: discourse-sync.mjs');
+});
+
+test('a mirror-shaped post from someone other than the API user does not stop the comment', async () => {
+  const fake = await fakeApi((method, url) => {
+    if (url.startsWith('/repos/o/r/issues/3/comments'))
+      return { status: 200, body: [topicLink(42)] };
+    if (url === '/t/42.json')
+      return {
+        status: 200,
+        body: { id: 42, slug: 'crash', post_stream: { stream: [1, 7] } },
+      };
+    if (url.startsWith('/t/42/posts.json'))
+      return {
+        status: 200,
+        body: {
+          post_stream: {
+            posts: [
+              firstPost,
+              {
+                id: 7,
+                post_number: 2,
+                post_type: 1,
+                username: 'mallory',
+                raw: forumReplyBody(human),
+              },
+            ],
+          },
+        },
+      };
+    if (url === '/posts.json' && method === 'POST')
+      return { status: 200, body: { id: 8 } };
+    return { status: 500, body: { unexpected: `${method} ${url}` } };
+  });
+  try {
+    const run = await runMode('to-forum', fake.origin, {
+      comment: human,
+      issue: { number: 3 },
+    });
+    expect(run.code, run.stderr).toBe(0);
+    expect(fake.hits.filter(({ method }) => method === 'POST')).toHaveLength(1);
+  } finally {
+    fake.server.close();
+  }
+});
+
+test('an issue opened by a bot opens no topic', async () => {
+  const fake = await fakeApi((method, url) => ({
+    status: 500,
+    body: { unexpected: `${method} ${url}` },
+  }));
+  try {
+    const run = await runMode('open-topic', fake.origin, {
+      issue: {
+        ...openedIssue.issue,
+        user: { login: 'renovate[bot]', type: 'Bot' },
+      },
+    });
+    expect(run.code, run.stderr).toBe(0);
+    expect(fake.hits).toEqual([]);
+  } finally {
+    fake.server.close();
+  }
+});
+
+test('a forum username that reads as a reference is defused in the GitHub comment header', () => {
+  const body = githubCommentBody(
+    { ...reply, username: 'gh-12' },
+    'https://forum.example.com/t/x/42/2',
+  );
+  expect(body.startsWith(`gh-${ZWSP}12 wrote on the forum:`)).toBe(true);
+});
+
+for (const [name, status, headers, message] of [
+  [
+    'a 403 with only a rate limit message',
+    403,
+    {},
+    'You have exceeded a secondary rate limit.',
+  ],
+  ['a 429 without Retry-After', 429, {}, 'Too many requests'],
+  [
+    'a 429 with a Retry-After above the cap',
+    429,
+    { 'retry-after': '120' },
+    'Too many requests',
+  ],
+] as [string, number, Record<string, string>, string][])
+  test(`in to-github, ${name} from GitHub stops the run`, async () => {
+    const fake = await fakeApi((method, url) => {
+      if (url.startsWith('/c/5/l/latest.json'))
+        return {
+          status: 200,
+          body: {
+            topic_list: { topics: [recentTopic(91, 3), recentTopic(92, 4)] },
+          },
+        };
+      const topic = /^\/t\/(9[12])(?:\.json|\/posts\.json)/.exec(url)?.[1];
+      if (topic && url.endsWith('.json'))
+        return {
+          status: 200,
+          body: {
+            id: Number(topic),
+            slug: 'crash',
+            post_stream: { stream: [1, 501] },
+          },
+        };
+      if (topic)
+        return {
+          status: 200,
+          body: { post_stream: { posts: [firstPost, reply] } },
+        };
+      if (url === '/repos/o/r/issues/3')
+        return { status, headers, body: { message } };
+      return { status: 500, body: { unexpected: `${method} ${url}` } };
+    });
+    try {
+      const started = performance.now();
+      const run = await runMode('to-github', fake.origin);
+      expect(run.code).not.toBe(0);
+      expect(run.stderr).toMatch(/Stopped before 1 more topic/);
+      expect(
+        fake.hits.filter(({ url }) => url === '/repos/o/r/issues/3'),
+      ).toHaveLength(1);
+      expect(
+        performance.now() - started,
+        'the run waited on a rate limit',
+      ).toBeLessThan(10_000);
+    } finally {
+      fake.server.close();
+    }
+  });
+
+test('a POST is not retried sooner than its Retry-After', async () => {
+  const fake = await fakeApi(() => ({
+    status: 429,
+    headers: { 'retry-after': '120' },
+    body: { message: 'Too many requests' },
+  }));
+  try {
+    await expect(
+      request(`${fake.origin}/posts.json`, { method: 'POST', body: '{}' }),
+    ).rejects.toThrow(/answered 429/);
+    expect(fake.hits).toHaveLength(1);
+  } finally {
+    fake.server.close();
+  }
+});
+
+test('a 403 on the latest list names the topics read_lists scope', async () => {
+  const fake = await fakeApi(() => ({ status: 403, body: { errors: ['no'] } }));
+  try {
+    const run = await runMode('to-github', fake.origin);
+    expect(run.code).not.toBe(0);
+    expect(run.stderr).toContain('needs the "topics: read_lists" scope');
+  } finally {
+    fake.server.close();
+  }
+});
+
+test('in to-github, a GitHub rate limit after a redirect still stops the run', async () => {
+  const fake = await fakeApi((method, url) => {
+    if (url.startsWith('/c/5/l/latest.json'))
+      return {
+        status: 200,
+        body: {
+          topic_list: { topics: [recentTopic(91, 3), recentTopic(92, 4)] },
+        },
+      };
+    const topic = /^\/t\/(9[12])(?:\.json|\/posts\.json)/.exec(url)?.[1];
+    if (topic && url.endsWith('.json'))
+      return {
+        status: 200,
+        body: {
+          id: Number(topic),
+          slug: 'crash',
+          post_stream: { stream: [1, 501] },
+        },
+      };
+    if (topic)
+      return {
+        status: 200,
+        body: { post_stream: { posts: [firstPost, reply] } },
+      };
+    if (url === '/repos/o/r/issues/3')
+      return {
+        status: 301,
+        headers: { location: '/repositories/7/issues/3' } as Record<
+          string,
+          string
+        >,
+      };
+    if (url === '/repositories/7/issues/3')
+      return {
+        status: 403,
+        headers: { 'retry-after': '60' },
+        body: { message: 'Forbidden' },
+      };
+    return { status: 500, body: { unexpected: `${method} ${url}` } };
+  });
+  try {
+    const run = await runMode('to-github', fake.origin);
+    expect(run.code).not.toBe(0);
+    expect(run.stderr).toMatch(/Stopped before 1 more topic/);
+  } finally {
+    fake.server.close();
+  }
+});
+
+for (const [name, env, message] of [
+  [
+    'an API key with a control character',
+    { DISCOURSE_API_KEY: `${'a'.repeat(63)}\n` },
+    'DISCOURSE_API_KEY',
+  ],
+  [
+    'an API key that is not 64 hex characters',
+    { DISCOURSE_API_KEY: 'not-a-key-but-secret' },
+    'DISCOURSE_API_KEY',
+  ],
+  [
+    'an API username with a control character',
+    { DISCOURSE_API_USERNAME: 'bot\u0007name' },
+    'DISCOURSE_API_USERNAME',
+  ],
+  [
+    'a forum URL over http',
+    { DISCOURSE_URL: 'http://forum.example.com' },
+    'DISCOURSE_URL',
+  ],
+  [
+    'a forum URL with credentials',
+    { DISCOURSE_URL: 'https://user:pass@forum.example.com' },
+    'DISCOURSE_URL',
+  ],
+  [
+    'a forum URL with a query',
+    { DISCOURSE_URL: 'https://forum.example.com/?a=1' },
+    'DISCOURSE_URL',
+  ],
+  [
+    'a forum URL with a hash',
+    { DISCOURSE_URL: 'https://forum.example.com/#x' },
+    'DISCOURSE_URL',
+  ],
+  [
+    'a forum URL that does not parse',
+    { DISCOURSE_URL: 'not a url' },
+    'DISCOURSE_URL',
+  ],
+] as [string, Record<string, string>, string][])
+  test(`${name} is refused before any request, without printing the value`, async () => {
+    const fake = await fakeApi((method, url) => ({
+      status: 500,
+      body: { unexpected: `${method} ${url}` },
+    }));
+    try {
+      const run = await runMode(
+        'to-forum',
+        fake.origin,
+        { comment: human, issue: { number: 3 } },
+        env,
+      );
+      expect(run.code).not.toBe(0);
+      expect(run.stderr).toContain(message);
+      for (const value of Object.values(env))
+        expect(run.stderr, 'the error prints the secret value').not.toContain(
+          value,
+        );
+      expect(fake.hits.filter(({ url }) => !url.startsWith('/repos/'))).toEqual(
+        [],
+      );
+    } finally {
+      fake.server.close();
+    }
+  });
+
+test('a GitHub next-page link to another host is not followed, so the token stays on GitHub', async () => {
+  const other = await fakeApi(() => ({ status: 200, body: [] }));
+  const fake = await fakeApi((method, url) =>
+    url.startsWith('/repos/o/r/issues/3/comments')
+      ? {
+          status: 200,
+          body: [],
+          headers: { link: `<${other.origin}/steal?page=2>; rel="next"` },
+        }
+      : { status: 500, body: { unexpected: `${method} ${url}` } },
+  );
+  try {
+    const run = await runMode('to-forum', fake.origin, {
+      comment: human,
+      issue: { number: 3 },
+    });
+    expect(run.code).not.toBe(0);
+    expect(run.stderr).toContain('not followed');
+    expect(other.hits, 'the other host saw the token').toEqual([]);
+  } finally {
+    fake.server.close();
+    other.server.close();
+  }
+});
+
+test('to-github waits a second between comments it posts', async () => {
+  const second = { ...reply, id: 502, post_number: 3, raw: 'Me too.' };
+  const fake = await fakeApi((method, url) => {
+    if (url.startsWith('/c/5/l/latest.json'))
+      return {
+        status: 200,
+        body: { topic_list: { topics: [recentTopic(91, 3)] } },
+      };
+    if (url === '/t/91.json')
+      return {
+        status: 200,
+        body: { id: 91, slug: 'crash', post_stream: { stream: [1, 501, 502] } },
+      };
+    if (url.startsWith('/t/91/posts.json'))
+      return {
+        status: 200,
+        body: { post_stream: { posts: [firstPost, reply, second] } },
+      };
+    if (url === '/repos/o/r/issues/3')
+      return {
+        status: 200,
+        body: { number: 3, repository_url: `${fake.origin}/repos/o/r` },
+      };
+    if (url.startsWith('/repos/o/r/issues/3/comments'))
+      return method === 'POST'
+        ? { status: 201 }
+        : { status: 200, body: [topicLink(91)] };
+    return { status: 500, body: { unexpected: `${method} ${url}` } };
+  });
+  try {
+    const run = await runMode('to-github', fake.origin);
+    expect(run.code, run.stderr).toBe(0);
+    const posts = fake.hits.filter(({ method }) => method === 'POST');
+    expect(posts).toHaveLength(2);
+    expect(posts[1]!.at! - posts[0]!.at!).toBeGreaterThanOrEqual(1_000);
+  } finally {
+    fake.server.close();
+  }
+});
+
+test('a forum rate limit stops the to-github run', async () => {
+  const fake = await fakeApi((method, url) => {
+    if (url.startsWith('/c/5/l/latest.json'))
+      return {
+        status: 200,
+        body: {
+          topic_list: { topics: [recentTopic(90, 4), recentTopic(91, 3)] },
+        },
+      };
+    if (url === '/t/90.json')
+      return { status: 429, body: { errors: ['slow down'] } };
+    return { status: 500, body: { unexpected: `${method} ${url}` } };
+  });
+  const github = await fakeApi(() => ({
+    status: 500,
+    body: { unexpected: true },
+  }));
+  try {
+    const run = await runMode(
+      'to-github',
+      fake.origin,
+      {},
+      { GITHUB_API_URL: github.origin },
+    );
+    expect(run.code).not.toBe(0);
+    expect(run.stderr).toMatch(/Stopped before 1 more topic/);
+    expect(fake.hits.some(({ url }) => url.startsWith('/t/91'))).toBe(false);
+  } finally {
+    fake.server.close();
+    github.server.close();
   }
 });

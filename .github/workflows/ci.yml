@@ -9,14 +9,15 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
-permissions:
-  contents: read
+permissions: {}
 
 jobs:
   test:
     # The main ruleset requires this name.
     name: Required checks
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read # checks out the code
     timeout-minutes: 10
 
     steps:
@@ -24,6 +25,15 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      # Fails on workflow security findings such as template injection or unpinned actions.
+      - name: Audit the workflows
+        uses: zizmorcore/zizmor-action@53290badfa369cb0bf7ad16342cb62c2fa47ac7b # v0.8.0
+        with:
+          version: 1.31.1
+          persona: pedantic
+          advanced-security: false
+          annotations: true
 
       - name: Set up Node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0

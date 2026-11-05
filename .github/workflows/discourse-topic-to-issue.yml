@@ -1,16 +1,13 @@
 name: Mirror Discourse replies to issues and pull requests
 
-# Polls, since Discourse cannot call GitHub. GitHub turns a schedule off after
-# 60 days without repository activity; re-enable it in the Actions tab.
+# Polls, since Discourse cannot call GitHub. In a public repository, GitHub
+# turns a schedule off after 60 days without activity; re-enable it in Actions.
 on:
   schedule:
     - cron: '*/15 * * * *'
   workflow_dispatch:
 
-permissions:
-  contents: read
-  issues: write
-  pull-requests: write
+permissions: {}
 
 concurrency:
   group: ${{ github.workflow }}
@@ -21,6 +18,10 @@ jobs:
     name: Mirror forum replies to GitHub
     if: vars.DISCOURSE_URL != '' && vars.DISCOURSE_CATEGORY_ID != ''
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read # checks out the script
+      issues: write # posts forum replies as issue comments
+      pull-requests: write # posts forum replies as pull request comments
     timeout-minutes: 10
 
     steps:
