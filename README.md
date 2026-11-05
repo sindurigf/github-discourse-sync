@@ -25,6 +25,8 @@ From Discourse to GitHub:
 
 How it behaves:
 
+- Every forum post links back to GitHub with an inline "View on GitHub"
+  link, not a bare URL, so Discourse shows no card repeating the GitHub text.
 - Each topic has the `external_id` `gh-<key>-issue-<n>` or `gh-<key>-pr-<n>`.
   The key is the first 12 hex characters of the SHA-256 of `owner/name`, so
   repositories that share a forum get different IDs. A run that repeats links

@@ -71,9 +71,26 @@ describe('to-forum', () => {
     assert.equal(run.code, 0, run.stderr);
     assert.equal(
       topic.posts.at(-1)?.raw,
-      `robin wrote on GitHub:\n\nStill broken, @\u200bnami.\n\n${comment.html_url}`,
+      `robin wrote on GitHub:\n\nStill broken, @\u200bnami.\n\n[View on GitHub](${comment.html_url})`,
     );
   });
+
+  for (const [name, footer] of [
+    ['the inline format', `[View on GitHub](${comment.html_url})`],
+    ['the earlier format with the link on its own line', comment.html_url],
+  ])
+    test(`a comment already copied in ${name} is not posted again`, async () => {
+      topic.posts.push({
+        id: 7,
+        post_number: 2,
+        post_type: 1,
+        username: API_USER,
+        raw: `robin wrote on GitHub:\n\nStill broken.\n\n${footer}`,
+      });
+      const run = await runMode('to-forum', fake, event());
+      assert.equal(run.code, 0, run.stderr);
+      assert.equal(topic.posts.length, 2);
+    });
 
   test('a second run of the same comment posts nothing', async () => {
     await runMode('to-forum', fake, event());
