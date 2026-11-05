@@ -4,13 +4,10 @@ name: Mirror issue and pull request comments to Discourse
 # event file, so a comment's text never reaches a shell
 # (README.md#security).
 on:
-  issue_comment:
+  issue_comment: # zizmor: ignore[dangerous-triggers] comment text reaches the script only through the event file (README.md#security).
     types: [created]
 
-permissions:
-  contents: read
-  issues: read
-  pull-requests: read
+permissions: {}
 
 concurrency:
   # One FIFO queue per issue or pull request across the forum workflows: the
@@ -24,6 +21,10 @@ jobs:
     name: Mirror the comment to Discourse
     if: vars.DISCOURSE_URL != '' && vars.DISCOURSE_CATEGORY_ID != '' && github.event.comment.user.type != 'Bot'
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read # checks out the script
+      issues: read # reads the comments that hold the topic link
+      pull-requests: read # reads pull request comments
     timeout-minutes: 5
 
     steps:

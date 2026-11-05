@@ -7,9 +7,7 @@ on:
   issues:
     types: [opened]
 
-permissions:
-  contents: read
-  issues: write
+permissions: {}
 
 concurrency:
   # One FIFO queue per issue or pull request across the forum workflows: the
@@ -25,6 +23,9 @@ jobs:
       vars.DISCOURSE_URL != '' && vars.DISCOURSE_CATEGORY_ID != '' &&
       github.event.issue.user.type != 'Bot'
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read # checks out the script
+      issues: write # comments the topic link on the issue
     timeout-minutes: 5
 
     steps:
