@@ -285,7 +285,9 @@ const REVIEW_VERBS = {
 /** A submitted review summary: its state, its body when it has one, and its link. Code line comments stay on GitHub. */
 export const shouldCopyReview = (review, cutoff) =>
   Object.hasOwn(REVIEW_VERBS, review.state) &&
-  review.user?.type !== 'Bot' &&
+  /* A deleted account leaves the review without a user. */
+  Boolean(review.user?.login) &&
+  review.user.type !== 'Bot' &&
   /* A Commented review with no body holds only code line comments. */
   !(review.state === 'COMMENTED' && !(review.body ?? '').trim()) &&
   Date.parse(review.submitted_at ?? '') >= cutoff;
@@ -595,8 +597,11 @@ const github = () => {
       );
       found.push(...recent);
       if (recent.length < pulls.length || pulls.length < GITHUB_PAGE_SIZE)
-        break;
+        return found;
     }
+    console.log(
+      `::warning::More than ${PULL_PAGES * GITHUB_PAGE_SIZE} pull requests were updated since the cutoff; the older ones are not read for reviews.`,
+    );
     return found;
   };
   /* A transferred issue redirects to its new repository; it is not ours to comment on. */
@@ -805,7 +810,18 @@ const toGithub = async () => {
     if (!reviews.length) return 0;
     const topicId = topicIdFromComments(await gh.comments(pullRequest.number));
     if (!topicId) return 0;
-    const { posts } = await topicPosts(get, topicId);
+    /* A deleted or hidden topic stays that way; failing would fail every run for 48 hours. */
+    const found = await topicPosts(get, topicId).catch((error) => {
+      if ([HTTP_NOT_FOUND, HTTP_FORBIDDEN].includes(error.status)) return null;
+      throw error;
+    });
+    if (!found) {
+      console.log(
+        `::warning::Topic ${topicId} for #${pullRequest.number} is deleted or hidden, so its reviews are not copied.`,
+      );
+      return 0;
+    }
+    const { posts } = found;
     let posted = 0;
     for (const review of reviews) {
       if (alreadyOnForum(posts, review.html_url, apiUsername)) continue;
@@ -843,18 +859,24 @@ const toGithub = async () => {
       }
     }
   }
-  if (!stopped) {
-    const pullRequests = await gh.updatedPullRequests(cutoff);
-    for (const pullRequest of pullRequests) {
-      try {
-        reviewsCopied += await syncReviews(pullRequest);
-      } catch (error) {
+  const pullRequests = stopped
+    ? []
+    : await gh.updatedPullRequests(cutoff).catch((error) => {
         failed += 1;
         console.error(
-          `::error::Could not copy the reviews of #${pullRequest.number}: ${describe(error)}`,
+          `::error::Could not list the updated pull requests: ${describe(error)}`,
         );
-        if (stopsTheRun(error, gh.api)) break;
-      }
+        return [];
+      });
+  for (const pullRequest of pullRequests) {
+    try {
+      reviewsCopied += await syncReviews(pullRequest);
+    } catch (error) {
+      failed += 1;
+      console.error(
+        `::error::Could not copy the reviews of #${pullRequest.number}: ${describe(error)}`,
+      );
+      if (stopsTheRun(error, gh.api)) break;
     }
   }
   console.log(

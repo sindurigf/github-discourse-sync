@@ -162,10 +162,15 @@ headers carry it.
   links and code. A copied email address, a link with `@`, a `#` and a number
   or an issue path, or a command with any of them needs editing before use.
 - Edits and deletions are not copied.
+- Re-running a close or reopen event from before forum posts linked back
+  inline posts its reply again, because the reply text changed.
 - Review summaries are copied by the 15-minute schedule, so they reach the
   forum up to 15 minutes later. An approval without a summary posts one line.
   Review comments on code lines are not copied, and neither is a Commented
-  review that holds only those.
+  review that holds only those. A review dismissed after it was copied stays
+  on the forum. A review on a closed or merged pull request is copied into
+  its closed topic. Only the 300 pull requests updated most recently since the
+  cutoff are read for reviews; a run with more prints a warning.
 - Comments made before a pull request has its topic, such as while it is a
   first draft, are not copied.
 - Text that would make a forum post longer than 32,000 characters is
@@ -197,13 +202,15 @@ headers carry it.
   at once, starts that many runs in parallel and can pass the forum's limit,
   so some of them may fail and need a re-run.
 - Each topic read costs about 3.3 seconds with this pacing, and each copied
-  reply adds a second, so one run of `discourse-topic-to-issue.yml` handles up
-  to about 150 topics bumped since the last successful run. With more, runs
+  reply or review adds time, so one run of `discourse-topic-to-issue.yml`
+  handles up to about 150 topics bumped and pull requests with new reviews
+  since the last successful run. With more, runs
   fail at their time limit and read the same topics again until activity
   drops; replies older than 48 hours by then are not copied.
 - The cutoff moves only after a run on the same branch whose job ran and
-  succeeded. One topic that keeps failing makes every run fail, so the cutoff
-  stops moving and reads widen to 48 hours until that topic is fixed.
+  succeeded. One topic or pull request that keeps failing makes every run
+  fail, so the cutoff stops moving and reads widen to 48 hours until it is
+  fixed.
 - After a long pause, such as a forum outage, the backlog of replies can take
   several runs to copy, and those runs may fail until it catches up. Each run
   copies only replies not yet on GitHub, so none is copied twice.

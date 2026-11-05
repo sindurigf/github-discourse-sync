@@ -92,7 +92,7 @@ export const startFakeApis = async (
   const hits: Hit[] = [];
   const faults: Fault[] = [];
   const settings = { solved: true };
-  /* Newest first, as the Actions API lists them. */
+  /* Listed newest first by start time, as the Actions API lists them. */
   const successfulRuns: {
     id: number;
     run_started_at: string;
@@ -142,9 +142,11 @@ export const startFakeApis = async (
           body: { message: 'only successful runs are faked' },
         };
       const branch = query.get('branch');
-      const runs = successfulRuns.filter(
-        (run) => branch === null || run.head_branch === branch,
-      );
+      const runs = successfulRuns
+        .filter((run) => branch === null || run.head_branch === branch)
+        .sort(
+          (a, b) => Date.parse(b.run_started_at) - Date.parse(a.run_started_at),
+        );
       const page = Number(query.get('page') ?? '1');
       const size = Number(query.get('per_page') ?? '30');
       return {
@@ -164,11 +166,17 @@ export const startFakeApis = async (
         : { status: 404, body: { message: 'Not Found' } };
     }
     if (path === '/repos/o/r/pulls' && method === 'GET') {
+      /* Like GitHub: sort=created (number order here) unless sort=updated, newest first unless direction=asc. */
+      const byUpdated = query.get('sort') === 'updated';
+      const sign = query.get('direction') === 'asc' ? -1 : 1;
       const pulls = [...issues.values()]
         .filter((issue) => issue.pullRequest)
         .sort(
           (a, b) =>
-            Date.parse(b.updated_at ?? '') - Date.parse(a.updated_at ?? ''),
+            sign *
+            (byUpdated
+              ? Date.parse(b.updated_at ?? '') - Date.parse(a.updated_at ?? '')
+              : b.number - a.number),
         );
       const page = Number(query.get('page') ?? '1');
       const size = Number(query.get('per_page') ?? '30');
