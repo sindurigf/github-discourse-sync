@@ -224,14 +224,14 @@ export const shouldMirrorPost = (post, apiUsername, alreadyMirrored) =>
 
 /**
  * One page of a category's latest list, newest bump first: the topics bumped since `cutoff`, and
- * whether an older one showed, which ends paging. Pinned topics lead page 0 whatever their age.
+ * whether an older unpinned one showed, which ends paging. Pinned topics lead page 0 whatever their age.
  */
 export const splitByActivity = (topics, cutoff) => {
-  const unpinned = topics.filter((topic) => !topic.pinned);
-  const recent = unpinned.filter(
-    (topic) => Date.parse(topic.bumped_at) >= cutoff,
-  );
-  return { recent, older: recent.length < unpinned.length };
+  const isRecent = (topic) => Date.parse(topic.bumped_at) >= cutoff;
+  return {
+    recent: topics.filter(isRecent),
+    older: topics.some((topic) => !topic.pinned && !isRecent(topic)),
+  };
 };
 
 export const forumReplyBody = (comment) => {
