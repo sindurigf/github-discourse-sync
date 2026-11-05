@@ -69,7 +69,7 @@ describe('copied text', () => {
   const cases: [string, string, string][] = [
     ['a mention at the start of a line', '@nami look', `@${ZWSP}nami look`],
     ['a mention in emphasis', '_@nami_', `_@${ZWSP}nami_`],
-    ['a team', '@org/team', `@${ZWSP}org/team`],
+    ['a team mention', '@org/team', `@${ZWSP}org/team`],
     ['a non-ASCII name', 'hi @ñandú', `hi @${ZWSP}ñandú`],
     [
       'a mention after a letter',

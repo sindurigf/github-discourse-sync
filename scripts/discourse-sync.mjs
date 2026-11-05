@@ -25,12 +25,23 @@ const TOPIC_URL = /\/t\/[^/\s]+\/(\d+)\b/;
 const REGULAR_POST = 1;
 
 const LOOKBACK_HOURS = 48;
+/* A topic bumped before the last successful run started, less this margin for clock skew and slow runs, has nothing new. */
+const LAST_RUN_MARGIN_MS = 900_000;
+const WORKFLOW_ON_BRANCH = /\/\.github\/workflows\/([^@/]+)@refs\/heads\/(.+)$/;
+/* Successful runs checked for a job that ran; past these, the run falls back to the lookback window. */
+const RUN_PAGES = 3;
+const RUNS_PER_PAGE = 10;
 const MS_PER_HOUR = 3_600_000;
 const POSTS_PER_REQUEST = 100;
 const GITHUB_PAGE_SIZE = 100;
 const MAX_ATTEMPTS = 5;
-/* Per request: 5 attempts and 3 redirects of 20 s, plus 4 waits of up to 20 s, is 4 minutes at most. */
+/* The longest Retry-After a GitHub request waits; longer, and the run stops (GitHub warns against calling on). */
 const MAX_RETRY_AFTER_S = 20;
+/* Discourse's admin API limit is per minute for the whole site, so a forum request waits a full minute; the run deadline still caps it. */
+const FORUM_MAX_RETRY_AFTER_S = 60;
+/* Discourse allows 60 admin API requests a minute site-wide by default (max_admin_api_reqs_per_minute); 40 leaves room for event runs. */
+export const FORUM_READ_GAP_MS = 1_500;
+const MAX_FORUM_GAP_MS = 60_000;
 const BACKOFF_BASE_MS = 2_000;
 const MS_PER_S = 1_000;
 const REQUEST_TIMEOUT_MS = 20_000;
@@ -324,18 +335,28 @@ export const redirectTarget = (from, location, method, origin, hops) => {
 
 export const STATUS_SCOPE = 'topics: status';
 
-const backoffMs = (attempt, retryAfterHeader) => {
+const backoffMs = (attempt, retryAfterHeader, maxRetryAfterS) => {
   const retryAfter = Number(retryAfterHeader);
   return Number.isFinite(retryAfter) && retryAfter > 0
-    ? Math.min(retryAfter, MAX_RETRY_AFTER_S) * MS_PER_S
+    ? Math.min(retryAfter, maxRetryAfterS) * MS_PER_S
     : BACKOFF_BASE_MS * 2 ** (attempt - 1);
 };
 
+const GITHUB_LIMITS = {
+  maxRetryAfterS: MAX_RETRY_AFTER_S,
+  retry429WithoutRetryAfter: false,
+};
+/* A forum 429 always waits, so an event run keeps its event within the deadline. */
+const FORUM_LIMITS = {
+  maxRetryAfterS: FORUM_MAX_RETRY_AFTER_S,
+  retry429WithoutRetryAfter: true,
+};
+
 /**
- * Retries a 429 for any method after its Retry-After, up to the cap, and a 5xx, timeout or
+ * Retries a 429 for any method after its Retry-After, up to the cap in `limits`, and a 5xx, timeout or
  * dropped connection for a GET only, since a repeated POST could post twice. A 403 names the scope it needs.
  */
-export const request = async (url, init, scopeHint) => {
+export const request = async (url, init, scopeHint, limits = GITHUB_LIMITS) => {
   const method = init?.method ?? 'GET';
   const origin = new URL(url).origin;
   let current = url;
@@ -374,21 +395,24 @@ export const request = async (url, init, scopeHint) => {
       continue;
     }
     const retryAfter = response.headers.get('retry-after');
+    /* Seconds above 0; zero, negative, empty or a date count as no Retry-After. */
     const retryAfterS = Number(retryAfter);
+    const hasRetryAfter =
+      retryAfter !== null && Number.isFinite(retryAfterS) && retryAfterS > 0;
     /* A 429 waits only as long as its Retry-After says, and only up to the cap; otherwise the caller stops. */
     const waitable429 =
       response.status === HTTP_TOO_MANY &&
-      retryAfter !== null &&
-      Number.isFinite(retryAfterS) &&
-      retryAfterS <= MAX_RETRY_AFTER_S;
+      (hasRetryAfter
+        ? retryAfterS <= limits.maxRetryAfterS
+        : limits.retry429WithoutRetryAfter);
     const serverError =
       method === 'GET' && response.status >= HTTP_SERVER_ERROR;
     if ((waitable429 || serverError) && canRetry) {
       await response.body?.cancel();
       await wait(
-        waitable429
-          ? Math.max(retryAfterS, 0) * MS_PER_S
-          : backoffMs(attempt, retryAfter),
+        waitable429 && hasRetryAfter
+          ? retryAfterS * MS_PER_S
+          : backoffMs(attempt, retryAfter, limits.maxRetryAfterS),
       );
       continue;
     }
@@ -421,7 +445,8 @@ export const request = async (url, init, scopeHint) => {
 
 /* Discourse makes API keys with SecureRandom.hex(32) (app/models/api_key.rb). */
 const API_KEY_FORMAT = /^[0-9a-f]{64}$/;
-const USERNAME_FORMAT = /^[^\s\p{Cc}]{1,60}$/u;
+/* Printable ASCII: fetch sends header values as Latin-1 bytes, so any other name could never sign in. */
+const USERNAME_FORMAT = /^[\x21-\x7e]{1,60}$/;
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', '[::1]', 'localhost']);
 
 /** The forum settings, checked before any request; an error names the setting, never its value. */
@@ -455,31 +480,36 @@ export const forumConfig = () => {
   };
 };
 
-const forum = () => {
+/** The forum API; with `readGapMs`, each request starts that long after the one before ended, to stay under the site-wide limit. */
+const forum = ({ readGapMs = 0 } = {}) => {
   const { base, apiKey, apiUsername } = forumConfig();
   const headers = {
     'Api-Key': apiKey,
     'Api-Username': apiUsername,
     'Content-Type': 'application/json',
   };
-  const get = async (path, scope) =>
-    (await request(`${base}${path}`, { headers }, scope)).json();
-  const post = async (path, body, scope) =>
-    (
-      await request(
-        `${base}${path}`,
-        { method: 'POST', headers, body: JSON.stringify(body) },
-        scope,
-      )
-    ).json();
-  const put = async (path, body, scope) =>
-    (
-      await request(
-        `${base}${path}`,
-        { method: 'PUT', headers, body: JSON.stringify(body) },
-        scope,
-      )
-    ).json();
+  let lastRequestAt = -Infinity;
+  const send = async (path, init, scope) => {
+    const gap = readGapMs - (Date.now() - lastRequestAt);
+    if (gap > 0) await wait(gap);
+    try {
+      return await (
+        await request(
+          `${base}${path}`,
+          { ...init, headers },
+          scope,
+          FORUM_LIMITS,
+        )
+      ).json();
+    } finally {
+      lastRequestAt = Date.now();
+    }
+  };
+  const get = (path, scope) => send(path, {}, scope);
+  const post = (path, body, scope) =>
+    send(path, { method: 'POST', body: JSON.stringify(body) }, scope);
+  const put = (path, body, scope) =>
+    send(path, { method: 'PUT', body: JSON.stringify(body) }, scope);
   return { base, get, post, put };
 };
 
@@ -520,7 +550,44 @@ const github = () => {
       headers: { ...headers, 'Content-Type': 'application/json' },
       body: JSON.stringify({ body }),
     });
-  return { api, comments, issue, comment };
+  const getJson = async (path) =>
+    (await request(`${api}${path}`, { headers })).json();
+  /**
+   * When this workflow last made a full pass on this branch: the newest successful run whose job ran,
+   * not one the `if:` skipped. Null on the first run; throws when that cannot be told.
+   */
+  const lastSuccessfulRunStart = async (now) => {
+    const ref = WORKFLOW_ON_BRANCH.exec(process.env.GITHUB_WORKFLOW_REF ?? '');
+    if (!ref)
+      throw new Error(
+        'GITHUB_WORKFLOW_REF does not name a workflow on a branch.',
+      );
+    const [, file, branch] = ref;
+    let sawRun = false;
+    for (let page = 1; page <= RUN_PAGES; page += 1) {
+      const { workflow_runs: runs = [] } = await getJson(
+        `/repos/${repo}/actions/workflows/${encodeURIComponent(file)}/runs?status=success&branch=${encodeURIComponent(branch)}&exclude_pull_requests=true&per_page=${RUNS_PER_PAGE}&page=${page}`,
+      );
+      for (const run of runs) {
+        sawRun = true;
+        const { jobs = [] } = await getJson(
+          `/repos/${repo}/actions/runs/${run.id}/jobs`,
+        );
+        if (!jobs.some(({ conclusion }) => conclusion === 'success')) continue;
+        const started = Date.parse(run.run_started_at ?? '');
+        if (!Number.isFinite(started) || started > now)
+          throw new Error(`run ${run.id} has no start time in the past.`);
+        return started;
+      }
+      if (runs.length < RUNS_PER_PAGE) break;
+    }
+    if (sawRun)
+      throw new Error(
+        `none of the newest ${RUN_PAGES * RUNS_PER_PAGE} successful runs ran its job.`,
+      );
+    return null;
+  };
+  return { api, comments, issue, comment, lastSuccessfulRunStart };
 };
 
 const toForum = async () => {
@@ -598,12 +665,31 @@ const stopsTheRun = (error, githubApi) =>
     error.url !== undefined &&
     new URL(error.url).origin === new URL(githubApi).origin);
 
+/** The oldest bump worth reading: since the last full pass, less a margin, within the lookback window and never later than now less the margin. */
+export const activityCutoff = (now, lastSuccessfulRunStart) =>
+  Math.min(
+    now - LAST_RUN_MARGIN_MS,
+    Math.max(
+      now - LOOKBACK_HOURS * MS_PER_HOUR,
+      lastSuccessfulRunStart === null
+        ? -Infinity
+        : lastSuccessfulRunStart - LAST_RUN_MARGIN_MS,
+    ),
+  );
+
 const toGithub = async () => {
   const categoryId = parseCategoryId(required('DISCOURSE_CATEGORY_ID'));
   const apiUsername = required('DISCOURSE_API_USERNAME');
-  const { base, get } = forum();
+  const { base, get } = forum({ readGapMs: forumReadGapMs() });
   const gh = github();
-  const cutoff = Date.now() - LOOKBACK_HOURS * MS_PER_HOUR;
+  const now = Date.now();
+  const lastRun = await gh.lastSuccessfulRunStart(now).catch((error) => {
+    console.log(
+      `::warning::Could not read the last successful run, so this run reads ${LOOKBACK_HOURS} hours of topics: ${describe(error)}`,
+    );
+    return null;
+  });
+  const cutoff = activityCutoff(now, lastRun);
   let lastCommentAt = 0;
   /* Forum first: a topic with no reply from a person costs no GitHub request (1,000 an hour per repository). */
   const syncTopic = async (listed, target) => {
@@ -813,6 +899,17 @@ const syncState = async () => {
   console.log(
     `Topic ${topicId} ${change.close ? 'closed' : 'reopened'}${solved ? ' and solved' : ''}.`,
   );
+};
+
+/* SYNC_FORUM_GAP_MS overrides FORUM_READ_GAP_MS, for a shorter one in tests. */
+const forumReadGapMs = () => {
+  const override = process.env.SYNC_FORUM_GAP_MS;
+  if (override === undefined) return FORUM_READ_GAP_MS;
+  if (!/^\d+$/.test(override) || Number(override) > MAX_FORUM_GAP_MS)
+    throw new Error(
+      `Set SYNC_FORUM_GAP_MS to a whole number of milliseconds up to ${MAX_FORUM_GAP_MS}, not "${override}".`,
+    );
+  return Number(override);
 };
 
 /* SYNC_DEADLINE_MS overrides the mode's deadline, for a shorter one in tests. */

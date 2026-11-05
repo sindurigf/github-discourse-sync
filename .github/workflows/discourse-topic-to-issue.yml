@@ -19,6 +19,7 @@ jobs:
     if: vars.DISCOURSE_URL != '' && vars.DISCOURSE_CATEGORY_ID != ''
     runs-on: ubuntu-24.04
     permissions:
+      actions: read # reads when this workflow last succeeded, to skip topics with nothing new
       contents: read # checks out the script
       issues: write # posts forum replies as issue comments
       pull-requests: write # posts forum replies as pull request comments

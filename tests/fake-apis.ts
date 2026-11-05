@@ -80,6 +80,13 @@ export const startFakeApis = async (
   const hits: Hit[] = [];
   const faults: Fault[] = [];
   const settings = { solved: true };
+  /* Newest first, as the Actions API lists them. */
+  const successfulRuns: {
+    id: number;
+    run_started_at: string;
+    head_branch: string;
+    jobs: { name: string; conclusion: string }[];
+  }[] = [];
   let nextId = 1000;
   let origin = '';
 
@@ -114,6 +121,36 @@ export const startFakeApis = async (
               repository_url: `${origin}/repos/o/elsewhere`,
             },
       };
+    if (
+      path === '/repos/o/r/actions/workflows/discourse-topic-to-issue.yml/runs'
+    ) {
+      if (query.get('status') !== 'success')
+        return {
+          status: 400,
+          body: { message: 'only successful runs are faked' },
+        };
+      const branch = query.get('branch');
+      const runs = successfulRuns.filter(
+        (run) => branch === null || run.head_branch === branch,
+      );
+      const page = Number(query.get('page') ?? '1');
+      const size = Number(query.get('per_page') ?? '30');
+      return {
+        status: 200,
+        body: {
+          workflow_runs: runs
+            .slice((page - 1) * size, page * size)
+            .map(({ jobs, ...run }) => run),
+        },
+      };
+    }
+    const runJobs = /^\/repos\/o\/r\/actions\/runs\/(\d+)\/jobs$/.exec(path);
+    if (runJobs) {
+      const run = successfulRuns.find(({ id }) => id === Number(runJobs[1]));
+      return run
+        ? { status: 200, body: { jobs: run.jobs } }
+        : { status: 404, body: { message: 'Not Found' } };
+    }
     const issueMatch = /^\/repos\/o\/r\/issues\/(\d+)(\/comments)?$/.exec(path);
     if (!issueMatch) return { status: 500, body: { unexpected: path } };
     const issue = issues.get(Number(issueMatch[1]));
@@ -340,6 +377,22 @@ export const startFakeApis = async (
     topics,
     /** Solved off for the category: no post can be accepted. */
     settings,
+    successfulRuns,
+    /** A successful run of discourse-topic-to-issue.yml, newest first; its job ran unless `jobConclusion` says otherwise. */
+    addSuccessfulRun: (
+      runStartedAt: string,
+      { branch = 'main', jobConclusion = 'success' } = {},
+    ) => {
+      nextId += 1;
+      successfulRuns.push({
+        id: nextId,
+        run_started_at: runStartedAt,
+        head_branch: branch,
+        jobs: [
+          { name: 'Mirror forum replies to GitHub', conclusion: jobConclusion },
+        ],
+      });
+    },
     /** Answers the next `times` matching requests with `status` before the fake sees them. */
     fail: (fault: Fault) => faults.push(fault),
     addIssue: (issue: Omit<Issue, 'comments'> & { comments?: Comment[] }) => {
@@ -394,7 +447,9 @@ export const runMode = async (
           GITHUB_EVENT_PATH: eventPath,
           GITHUB_API_URL: fake.origin,
           GITHUB_REPOSITORY: REPOSITORY,
+          GITHUB_WORKFLOW_REF: `${REPOSITORY}/.github/workflows/discourse-topic-to-issue.yml@refs/heads/main`,
           GITHUB_TOKEN: 'gh-token',
+          SYNC_FORUM_GAP_MS: '0',
           DISCOURSE_URL: fake.origin,
           DISCOURSE_CATEGORY_ID: String(CATEGORY_ID),
           DISCOURSE_API_KEY: API_KEY,
