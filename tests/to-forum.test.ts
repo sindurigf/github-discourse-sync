@@ -162,6 +162,11 @@ describe('to-forum', () => {
       'DISCOURSE_API_USERNAME',
     ],
     [
+      'an API username outside ASCII',
+      { DISCOURSE_API_USERNAME: 'ñandú' },
+      'DISCOURSE_API_USERNAME',
+    ],
+    [
       'a forum URL over http',
       { DISCOURSE_URL: 'http://forum.example.com' },
       'DISCOURSE_URL',

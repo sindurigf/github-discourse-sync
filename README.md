@@ -114,6 +114,9 @@ gh secret set DISCOURSE_API_KEY
 gh secret set DISCOURSE_API_USERNAME
 ```
 
+The sync user needs a username in plain ASCII, without spaces, because HTTP
+headers carry it.
+
 `gh secret set` asks for the value, so it stays out of your shell history.
 
 ## Limits and Privacy
