@@ -139,6 +139,20 @@ describe('request', () => {
     assert.deepEqual(paths(), ['/posts.json']);
   });
 
+  for (const value of ['0', '-1', ''])
+    test(`a GitHub 429 with Retry-After "${value}" counts as having none, so it is not retried at once`, async () => {
+      fake.fail({
+        path: '/t/42.json',
+        status: 429,
+        headers: { 'retry-after': value },
+      });
+      await assert.rejects(
+        request(`${fake.origin}/t/42.json`, {}),
+        /answered 429/,
+      );
+      assert.deepEqual(paths(), ['/t/42.json']);
+    });
+
   test('a 403 names the missing scope', async () => {
     fake.fail({ path: '/posts.json', status: 403 });
     await assert.rejects(

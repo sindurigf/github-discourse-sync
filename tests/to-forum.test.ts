@@ -219,6 +219,22 @@ describe('to-forum', () => {
     assert.doesNotMatch(run.stderr, /answered 429/);
   });
 
+  test('a forum 429 with Retry-After 0 backs off instead of retrying at once', async () => {
+    fake.fail({
+      path: '/t/42.json',
+      status: 429,
+      headers: { 'retry-after': '0' },
+    });
+    const run = await runMode('to-forum', fake, event());
+    assert.equal(run.code, 0, run.stderr);
+    const reads = fake.hits.filter(({ url }) => url === '/t/42.json');
+    assert.equal(reads.length, 2);
+    assert.ok(
+      reads[1]!.at - reads[0]!.at >= 1_500,
+      'the retry did not back off',
+    );
+  });
+
   test('an issue with no topic is skipped', async () => {
     fake.issues.get(3)!.comments.pop();
     const run = await runMode('to-forum', fake, event());
