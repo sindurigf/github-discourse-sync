@@ -2011,6 +2011,17 @@ test('a POST is not retried sooner than its Retry-After', async () => {
   }
 });
 
+test('a 403 on the latest list names the topics read_lists scope', async () => {
+  const fake = await fakeApi(() => ({ status: 403, body: { errors: ['no'] } }));
+  try {
+    const run = await runMode('to-github', fake.origin);
+    expect(run.code).not.toBe(0);
+    expect(run.stderr).toContain('needs the "topics: read_lists" scope');
+  } finally {
+    fake.server.close();
+  }
+});
+
 test('in to-github, a GitHub rate limit after a redirect still stops the run', async () => {
   const fake = await fakeApi((method, url) => {
     if (url.startsWith('/c/5/l/latest.json'))
