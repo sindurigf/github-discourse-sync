@@ -6,8 +6,11 @@
     "allowJs": true,
     "strict": true,
     "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true,
     "skipLibCheck": true,
     "types": ["node"]
   },
-  "include": ["scripts", "tests", "playwright.config.ts"]
+  "include": ["scripts", "tests"]
 }
