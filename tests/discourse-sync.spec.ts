@@ -847,7 +847,7 @@ test('a forum topic whose issue was deleted is skipped instead of failing the ru
           GITHUB_TOKEN: 'gh-token',
           DISCOURSE_URL: fake.origin,
           DISCOURSE_CATEGORY_ID: '5',
-          DISCOURSE_API_KEY: 'key',
+          DISCOURSE_API_KEY: API_KEY,
           DISCOURSE_API_USERNAME: 'forum-bot',
         },
       },
@@ -1272,6 +1272,74 @@ test('a forum username that reads as a reference is defused in the GitHub commen
   );
   expect(body.startsWith(`gh-${ZWSP}12 wrote on the forum:`)).toBe(true);
 });
+
+for (const [name, env, message] of [
+  [
+    'an API key with a control character',
+    { DISCOURSE_API_KEY: `${'a'.repeat(63)}\n` },
+    'DISCOURSE_API_KEY',
+  ],
+  [
+    'an API key that is not 64 hex characters',
+    { DISCOURSE_API_KEY: 'not-a-key-but-secret' },
+    'DISCOURSE_API_KEY',
+  ],
+  [
+    'an API username with a control character',
+    { DISCOURSE_API_USERNAME: 'bot\u0007name' },
+    'DISCOURSE_API_USERNAME',
+  ],
+  [
+    'a forum URL over http',
+    { DISCOURSE_URL: 'http://forum.example.com' },
+    'DISCOURSE_URL',
+  ],
+  [
+    'a forum URL with credentials',
+    { DISCOURSE_URL: 'https://user:pass@forum.example.com' },
+    'DISCOURSE_URL',
+  ],
+  [
+    'a forum URL with a query',
+    { DISCOURSE_URL: 'https://forum.example.com/?a=1' },
+    'DISCOURSE_URL',
+  ],
+  [
+    'a forum URL with a hash',
+    { DISCOURSE_URL: 'https://forum.example.com/#x' },
+    'DISCOURSE_URL',
+  ],
+  [
+    'a forum URL that does not parse',
+    { DISCOURSE_URL: 'not a url' },
+    'DISCOURSE_URL',
+  ],
+] as [string, Record<string, string>, string][])
+  test(`${name} is refused before any request, without printing the value`, async () => {
+    const fake = await fakeApi((method, url) => ({
+      status: 500,
+      body: { unexpected: `${method} ${url}` },
+    }));
+    try {
+      const run = await runMode(
+        'to-forum',
+        fake.origin,
+        { comment: human, issue: { number: 3 } },
+        env,
+      );
+      expect(run.code).not.toBe(0);
+      expect(run.stderr).toContain(message);
+      for (const value of Object.values(env))
+        expect(run.stderr, 'the error prints the secret value').not.toContain(
+          value,
+        );
+      expect(fake.hits.filter(({ url }) => !url.startsWith('/repos/'))).toEqual(
+        [],
+      );
+    } finally {
+      fake.server.close();
+    }
+  });
 
 test('the link comment text in issue-to-discourse.yml matches the script', () => {
   const workflow = readFileSync(

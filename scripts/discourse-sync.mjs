@@ -344,11 +344,47 @@ export const request = async (url, init, scopeHint) => {
   }
 };
 
+/* Discourse makes API keys with SecureRandom.hex(32) (app/models/api_key.rb). */
+const API_KEY_FORMAT = /^[0-9a-f]{64}$/;
+const USERNAME_FORMAT = /^[^\s\p{Cc}]{1,60}$/u;
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', '[::1]', 'localhost']);
+
+/** The forum settings, checked before any request; an error names the setting, never its value. */
+export const forumConfig = () => {
+  let url;
+  try {
+    url = new URL(required('DISCOURSE_URL'));
+  } catch {
+    throw new Error(
+      'Set DISCOURSE_URL to the forum base URL, such as https://forum.example.com.',
+    );
+  }
+  /* http only on loopback, for a local forum or the tests. */
+  const secure =
+    url.protocol === 'https:' ||
+    (url.protocol === 'http:' && LOOPBACK_HOSTS.has(url.hostname));
+  if (!secure || url.username || url.password || url.search || url.hash)
+    throw new Error(
+      'Set DISCOURSE_URL to an https URL without a login, query or fragment.',
+    );
+  if (!API_KEY_FORMAT.test(required('DISCOURSE_API_KEY')))
+    throw new Error(
+      'Set DISCOURSE_API_KEY to the 64 hex characters Discourse shows for the key.',
+    );
+  if (!USERNAME_FORMAT.test(required('DISCOURSE_API_USERNAME')))
+    throw new Error("Set DISCOURSE_API_USERNAME to the sync user's username.");
+  return {
+    base: url.href.replace(/\/$/, ''),
+    apiKey: process.env.DISCOURSE_API_KEY,
+    apiUsername: process.env.DISCOURSE_API_USERNAME,
+  };
+};
+
 const forum = () => {
-  const base = required('DISCOURSE_URL').replace(/\/$/, '');
+  const { base, apiKey, apiUsername } = forumConfig();
   const headers = {
-    'Api-Key': required('DISCOURSE_API_KEY'),
-    'Api-Username': required('DISCOURSE_API_USERNAME'),
+    'Api-Key': apiKey,
+    'Api-Username': apiUsername,
     'Content-Type': 'application/json',
   };
   const get = async (path, scope) =>
@@ -641,6 +677,7 @@ const syncState = async () => {
 
 const main = async () => {
   const mode = process.argv[2];
+  forumConfig();
   if (mode === 'state') return syncState();
   if (mode === 'open-topic') return openTopic();
   if (mode === 'to-forum') return toForum();
