@@ -158,6 +158,30 @@ describe('open-topic', () => {
     );
   });
 
+  test('a forum rate limit of up to a minute is waited out, not reported, until the deadline', async () => {
+    fake.addIssue({ number: 3 });
+    fake.fail({
+      path: '/posts.json',
+      status: 429,
+      headers: { 'retry-after': '45' },
+      times: 10,
+    });
+    const run = await runMode('open-topic', fake, issueEvent, {
+      SYNC_DEADLINE_MS: '1500',
+    });
+    assert.notEqual(run.code, 0);
+    assert.match(run.stderr, /run deadline/);
+    assert.doesNotMatch(run.stderr, /answered 429/);
+  });
+
+  test('a forum 429 without Retry-After is retried, so the event is kept', async () => {
+    fake.addIssue({ number: 3 });
+    fake.fail({ method: 'POST', path: '/posts.json', status: 429 });
+    const run = await runMode('open-topic', fake, issueEvent);
+    assert.equal(run.code, 0, run.stderr);
+    assert.equal(fake.topics.length, 1);
+  });
+
   test('a 429 on posting waits and retries', async () => {
     fake.addIssue({ number: 3 });
     fake.fail({
