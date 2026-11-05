@@ -389,20 +389,23 @@ export const request = async (url, init, scopeHint, limits = GITHUB_LIMITS) => {
       continue;
     }
     const retryAfter = response.headers.get('retry-after');
+    /* Seconds above 0; zero, negative, empty or a date count as no Retry-After. */
     const retryAfterS = Number(retryAfter);
+    const hasRetryAfter =
+      retryAfter !== null && Number.isFinite(retryAfterS) && retryAfterS > 0;
     /* A 429 waits only as long as its Retry-After says, and only up to the cap; otherwise the caller stops. */
     const waitable429 =
       response.status === HTTP_TOO_MANY &&
-      (retryAfter === null
-        ? limits.retry429WithoutRetryAfter
-        : Number.isFinite(retryAfterS) && retryAfterS <= limits.maxRetryAfterS);
+      (hasRetryAfter
+        ? retryAfterS <= limits.maxRetryAfterS
+        : limits.retry429WithoutRetryAfter);
     const serverError =
       method === 'GET' && response.status >= HTTP_SERVER_ERROR;
     if ((waitable429 || serverError) && canRetry) {
       await response.body?.cancel();
       await wait(
-        waitable429 && retryAfter !== null
-          ? Math.max(retryAfterS, 0) * MS_PER_S
+        waitable429 && hasRetryAfter
+          ? retryAfterS * MS_PER_S
           : backoffMs(attempt, retryAfter, limits.maxRetryAfterS),
       );
       continue;
